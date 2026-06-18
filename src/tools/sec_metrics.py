@@ -14,36 +14,83 @@ class SECMetricExtractor:
     """
 
     METRIC_CANDIDATES = {
+
+        # Income Statement
         "revenue": [
             "Revenues",
             "RevenueFromContractWithCustomerExcludingAssessedTax",
             "SalesRevenueNet",
         ],
-        "net_income": [
-            "NetIncomeLoss",
+
+        "net_income": ["NetIncomeLoss"],
+        "operating_income": ["OperatingIncomeLoss"],
+        "gross_profit": ["GrossProfit"],
+
+        "interest_expense": [
+            "InterestExpenseNonOperating",
+            "InterestExpense",
         ],
-        "assets": [
-            "Assets",
+
+        # Balance Sheet
+        "assets": ["Assets"],
+        "current_assets": ["AssetsCurrent"],
+        "liabilities": ["Liabilities"],
+        "current_liabilities": ["LiabilitiesCurrent"],
+
+        "equity": [
+            "StockholdersEquity",
+            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
         ],
-        "liabilities": [
-            "Liabilities",
-        ],
+
         "cash": [
             "CashAndCashEquivalentsAtCarryingValue",
             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
         ],
-        "operating_income": [
-            "OperatingIncomeLoss",
+
+        "inventory": ["InventoryNet"],
+        "accounts_receivable": ["AccountsReceivableNetCurrent"],
+        "accounts_payable": ["AccountsPayableCurrent"],
+        "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
+        "working_capital": ["WorkingCapital"],
+
+        # Debt
+        "debt": [
+            "LongTermDebt",
+            "LongTermDebtCurrent",
+            "ShortTermBorrowings",
+            "ShortTermDebt",
+            "LongTermDebtAndFinanceLeaseObligations",
+            "LongTermDebtAndFinanceLeaseObligationsCurrent",
+            "ShortTermBorrowingsAndFinanceLeaseObligations",
         ],
-        "stockholders_equity": [
-            "StockholdersEquity",
-            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+
+        "long_term_debt": [
+            "LongTermDebt",
+            "LongTermDebtAndFinanceLeaseObligations",
         ],
+
+        # Cash Flow Statement
         "operating_cash_flow": [
             "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
         ],
+
         "capital_expenditures": [
             "PaymentsToAcquirePropertyPlantAndEquipment",
+            "PaymentsToAcquireProductiveAssets",
+        ],
+
+        "free_cash_flow": ["FreeCashFlow"],
+
+        # Altman Z Score
+        "ebit": [
+            "OperatingIncomeLoss",
+        ],
+
+        # Shares
+        "shares_outstanding": [
+            "CommonStockSharesOutstanding",
+            "EntityCommonStockSharesOutstanding",
         ],
     }
 

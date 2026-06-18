@@ -78,7 +78,7 @@ FRED ingestion
    [x] Persistence
 
 Financial ratios
-   [ ] Core ratios
+   [x] Core ratios
    [ ] Risk score
 
 LangGraph state
