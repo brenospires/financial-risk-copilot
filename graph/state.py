@@ -1,40 +1,54 @@
-from typing import TypedDict, Optional, Dict, Any, List, Literal
+from typing import TypedDict, Any, Literal, get_args
 
-ExecutionStatus = Literal[
-    "not_started",
-    "running",
-    "completed",
-    "failed"
+Intent = Literal[
+    "company_risk_analysis",
+    "macro_conditions_analysis",
+    "company_comparison",
+    "company_trend_analysis",
+    "company_overview",
+    "full_risk_overview",
+    "unsupported",
 ]
 
-class FinancialAgentState(TypedDict, total=False):
-    """
-    Shared state used by the LangGraph workflow.
+SUPPORTED_INTENTS: tuple[str, ...] = get_args(Intent)
 
-    In LangGraph, every node receives the current state and returns updates
-    to this same state. This object defines which fields can exist during
-    one execution of the financial analysis agent.
+class AgentState(TypedDict, total=False):
+    """
+    Shared LangGraph state.
+
+    This state is passed from node to node and progressively updated.
+
+    We use total=False because the initial graph input will usually contain
+    only user_query. Each node then adds only the fields it is responsible for.
     """
 
-    # User input
     user_query: str
-    ticker: str
 
-    # Execution control
-    current_node: Optional[str]
-    last_completed_node: Optional[str]
-    execution_status: ExecutionStatus
-    errors: List[str]
+    # Planner outputs
+    intent: Intent
+    tickers: list[str]
+    company_names: list[str]
+    start_year: int | None
+    end_year: int | None
+    needs_sec_data: bool
+    needs_fred_data: bool
+    needs_comparison: bool
+    macro_indicators: list[str]
+    plan: list[dict[str, Any]]
 
-    # Planner output
-    plan: List[str]
+    # Research outputs
+    company_data: dict[str, dict[str, Any]]
+    macro_data: dict[str, dict[str, Any]]
 
-    # Researcher output
-    sec_metrics: List[Dict[str, Any]]
-    financial_ratios: Dict[str, Optional[float]]
-    risk_score: Dict[str, Any]
-    fred_indicators: Dict[str, Any]
-    research_summary: str
+    # Computation outputs
+    company_metrics: dict[str, dict[str, Any]]
+    comparison_metrics: dict[str, Any] | None
+    macro_summary: dict[str, Any] | None
 
-    # Writer output
+    # Control / diagnostics
+    missing_data: list[dict[str, Any]]
+    errors: list[str]
+
+    # Writer input/output
+    analysis_context: dict[str, Any]
     final_answer: str

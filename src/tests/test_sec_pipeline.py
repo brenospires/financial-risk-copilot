@@ -1,87 +1,95 @@
 import sys
 from pathlib import Path
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from src.tools.sec_tool import SECTool
-from src.tools.sec_metrics import SECMetricExtractor
 from src.database.sec_repository import SECRepository
 
 def test_sec_pipeline():
     ticker = "AAPL"
-    sec = SECTool(user_agent="financial-risk-copilot brenospires@gmail.com")
+
+    sec = SECTool()
 
     repo = SECRepository()
     repo.create_tables()
 
-    # Company metadata
-    company = sec.get_company_by_ticker(ticker)
-    cik = sec.get_cik_from_ticker(ticker)
-
-    print("\nCompany:")
-    print(company)
-
-    print("\nCIK:")
-    print(cik)
-
-    repo.save_company(
+    company_data = sec.get_company_data(
         ticker=ticker,
-        cik=cik,
-        name=company["title"]
+        start_date="2020-01-01",
+        end_date="2024-12-31",
+        refresh=True,
     )
 
-    # Company facts and financial metrics
-    facts = sec.get_company_facts(ticker)
-    print("\nCompany facts keys:")
-    print(facts.keys())
+    print("\nCompany data response keys:")
+    print(company_data.keys())
 
-    extractor = SECMetricExtractor(facts)
-    metrics = extractor.extract_all_metrics()
+    print("\nCompany metadata:")
+    print({
+        "ticker": company_data.get("ticker"),
+        "company_name": company_data.get("company_name"),
+        "cik": company_data.get("cik"),
+        "sic": company_data.get("sic"),
+        "sic_description": company_data.get("sic_description"),
+        "source": company_data.get("source"),
+    })
 
-    print("\nExtracted financial metrics:")
-    for metric_name, metric_data in metrics.items():
-        print(metric_name, metric_data)
+    print("\nYears available:")
+    print(company_data.get("years_available"))
 
-    repo.save_metrics(ticker, metrics)
-    saved_metrics = repo.get_metrics(ticker)
-    print("\nSaved metrics from SQLite:")
+    print("\nPeriods available:")
+    print(company_data.get("periods_available"))
 
-    for metric in saved_metrics:
-        print(metric)
+    print("\nMissing years:")
+    print(company_data.get("missing_years"))
 
-    # Recent 10-K filing metadata
-    filings = sec.get_recent_filings(
+    print("\nMissing core metrics:")
+    print(company_data.get("missing_core_metrics"))
+
+    print("\nErrors:")
+    print(company_data.get("errors"))
+
+    financials = company_data.get("financials", [])
+
+    print(f"\nNumber of normalized SEC metric rows: {len(financials)}")
+
+    print("\nFirst 20 normalized metric rows:")
+    for row in financials[:20]:
+        print(row)
+
+    saved_company = repo.get_company(ticker)
+
+    print("\nSaved company from SQLite:")
+    print(saved_company)
+
+    saved_metrics = repo.get_metrics(
         ticker=ticker,
-        form_type="10-K",
-        limit=1,
+        start_date="2020-01-01",
+        end_date="2024-12-31",
     )
 
-    print("\nRecent 10-K filings:")
+    print(f"\nNumber of saved metric rows from SQLite: {len(saved_metrics)}")
 
-    for filing in filings:
-        print(filing)
+    print("\nFirst 20 saved metric rows from SQLite:")
+    for row in saved_metrics[:20]:
+        print(row)
 
-    # Download latest 10-K filing text
-    filing = filings[0]
+    assert company_data["ticker"] == ticker
+    assert company_data["company_name"] is not None
+    assert company_data["cik"] is not None
+    assert "financials" in company_data
+    assert isinstance(company_data["financials"], list)
 
-    filing_text = sec.download_filing(
-        ticker=ticker,
-        accession_number=filing["accession_number"],
-        primary_document=filing["primary_document"],
-    )
+    assert saved_company is not None
+    assert saved_company["ticker"] == ticker
+    assert saved_company["company_name"] is not None
 
-    print("\nFirst 2000 characters:")
-    print(filing_text[:2000])
-
-    # Save filing metadata and raw text
-    repo.save_filing(
-        ticker=ticker,
-        filing=filing,
-        filing_text=filing_text,
-    )
+    assert len(saved_metrics) > 0
 
     print("\nSEC pipeline completed successfully.")
     print("Data saved to:")
     print(repo.db_path)
+
 
 if __name__ == "__main__":
     test_sec_pipeline()

@@ -18,7 +18,6 @@ def planner_node(state: FinancialAgentState) -> FinancialAgentState:
     """
 
     user_query = state.get("user_query", "")
-
     ticker = _extract_ticker(user_query)
 
     if ticker is None:

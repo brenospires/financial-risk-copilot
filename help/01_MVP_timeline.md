@@ -79,10 +79,10 @@ FRED ingestion
 
 Financial ratios
    [x] Core ratios
-   [ ] Risk score
+   [x] Risk score
 
 LangGraph state
-   [ ] State definition
+   [x] State definition
 
 Agent nodes
    [ ] Planner
