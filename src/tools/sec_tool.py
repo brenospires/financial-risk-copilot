@@ -146,7 +146,7 @@ class SECTool:
         "capital_expenditures",
         "retained_earnings",
         "working_capital",
-        "ebit",
+        "ebit"
     )
 
     def __init__(
