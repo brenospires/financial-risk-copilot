@@ -46,67 +46,48 @@ financial-risk-copilot/
 ├── README.md
 ├── LICENSE
 ├── requirements.txt
+├── .env.example
 ├── .gitignore
 ├── help/
 │   ├── 01_MVP_timeline.md
 │   ├── 02_installing_ollama.md
-│   └──
+│   └── 03_FRED_API.md
 │
 ├── data/
-│   │
-│   ├── raw/
-│   │   ├── filings/
-│   │   └── macro/
-│   │
-│   └── processed/
 │
-├── notebooks/
-│   ├── 01_sec_exploration.ipynb
-│   ├── 02_fred_exploration.ipynb
-│   └── 03_agent_testing.ipynb
+├── agents/
+│   ├── nodes_helper.py
+│   ├── planner_node.py
+│   ├── researcher_node.py
+│   └── writer_node.py
 │
-├── src/
-│   │
-│   ├── main.py
-│   ├── llm.py
-│   ├── config.py
-│   │
-│   ├── database/
-│   │   ├── connection.py
-│   │   ├── models.py
-│   │   └── seed.py
-│   │
-│   ├── tools/
-│   │   ├── sec_tool.py
-│   │   ├── fred_tool.py
-│   │   ├── financial_ratios.py
-│   │   └── risk_analysis.py
-│   │
-│   ├── agents/
-│   │   ├── planner.py
-│   │   ├── researcher.py
-│   │   └── writer.py
-│   │
-│   ├── graphs/
-│   │   ├── state.py
-│   │   └── financial_risk_graph.py
-│   │
-│   └── prompts/
-│       ├── planner_prompt.py
-│       ├── researcher_prompt.py
-│       └── writer_prompt.py
+├── config/
+│   └── settings.py
 │
-├── tests/
-│   ├── test_sec_tool.py
-│   ├── test_fred_tool.py
-│   ├── test_ratios.py
-│   └── test_graph.py
+├── docs/
+│   └── supported_actions.md
 │
-└── docs/
-    ├── architecture.md
-    ├── ollama_setup.md
-    ├── langgraph_workflow.md
-    └── future_improvements.md
+├── graph/
+│   ├── nodes.py
+│   └── state.py
+│
+└── src/
+    ├── llm.py
+    ├── database/
+    │   ├── fred_repository.py
+    │   └── sec_repository.py
+    ├── tests/
+    │   ├── test_financial_statement_metrics.py
+    │   ├── test_fred_pipeline.py
+    │   └── test_sec_pipeline.py
+    └── tools/
+        ├── financial_analysis.py
+        ├── financial_statement_metrics.py
+        ├── fred_tool.py
+        ├── macro_risk_score.py
+        ├── metrics_utils.py
+        ├── risk_score.py
+        └── sec_tool.py
 
 ## Project Goal
 
