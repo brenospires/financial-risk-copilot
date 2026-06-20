@@ -222,3 +222,4 @@ __marimo__/
 *.csv
 
 .env
+AGENTS.md
