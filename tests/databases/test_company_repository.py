@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from data_models.company import Company
-from databases.company_repository import CompanyRepository
-from databases.initialize import initialize_database
+from database.company_repository import CompanyRepository
+from database.initialize import initialize_database
 
 
 class TestCompanyRepository(unittest.TestCase):

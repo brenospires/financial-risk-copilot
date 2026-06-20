@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from databases.initialize import initialize_database
+from database.initialize import initialize_database
 
 
 class TestInitializeDatabase(unittest.TestCase):

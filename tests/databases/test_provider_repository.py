@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from data_models.provider import DataProvider
-from databases.initialize import initialize_database
-from databases.provider_repository import DataProviderRepository
+from database.initialize import initialize_database
+from database.provider_repository import DataProviderRepository
 
 
 class TestDataProviderRepository(unittest.TestCase):

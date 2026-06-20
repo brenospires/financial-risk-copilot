@@ -6,7 +6,7 @@ from data_models.financial_item import FinancialItem
 from data_models.financial_statement import FinancialStatement
 from data_models.observation_type import ObservationType
 from data_models.time_series_frequency import TimeSeriesFrequency
-from databases.base_repository import BaseRepository
+from database.base_repository import BaseRepository
 
 
 class FinancialStatementRepository(BaseRepository):

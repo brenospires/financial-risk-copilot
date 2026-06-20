@@ -9,10 +9,10 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from data_models.company import Company
 from data_models.company_source import CompanySource
 from data_models.provider import DataProvider
-from databases.company_repository import CompanyRepository
-from databases.company_source_repository import CompanySourceRepository
-from databases.initialize import initialize_database
-from databases.provider_repository import DataProviderRepository
+from database.company_repository import CompanyRepository
+from database.company_source_repository import CompanySourceRepository
+from database.initialize import initialize_database
+from database.provider_repository import DataProviderRepository
 
 
 class TestCompanySourceRepository(unittest.TestCase):

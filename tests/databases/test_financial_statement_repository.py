@@ -13,11 +13,11 @@ from data_models.financial_statement import FinancialStatement
 from data_models.observation_type import ObservationType
 from data_models.provider import DataProvider
 from data_models.time_series_frequency import TimeSeriesFrequency
-from databases.company_repository import CompanyRepository
-from databases.company_source_repository import CompanySourceRepository
-from databases.financial_statement_repository import FinancialStatementRepository
-from databases.initialize import initialize_database
-from databases.provider_repository import DataProviderRepository
+from database.company_repository import CompanyRepository
+from database.company_source_repository import CompanySourceRepository
+from database.financial_statement_repository import FinancialStatementRepository
+from database.initialize import initialize_database
+from database.provider_repository import DataProviderRepository
 
 
 class TestFinancialStatementRepository(unittest.TestCase):

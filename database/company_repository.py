@@ -2,7 +2,7 @@ from pathlib import Path
 
 from config.settings import DATABASE_PATH
 from data_models.company import Company
-from databases.base_repository import BaseRepository
+from database.base_repository import BaseRepository
 
 
 class CompanyRepository(BaseRepository):
