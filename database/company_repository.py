@@ -15,19 +15,27 @@ class CompanyRepository(BaseRepository):
                 """
                 CREATE TABLE IF NOT EXISTS companies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL,
+                    ticker TEXT NOT NULL,
+                    market TEXT NOT NULL,
                     name TEXT NOT NULL,
                     country TEXT,
-                    industry TEXT,
                     sector TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (provider_id) REFERENCES data_providers(id)
                 )
                 """
             )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_companies_identity
-                ON companies (LOWER(name), COALESCE(country, ''))
+                ON companies (
+                    provider_id,
+                    LOWER(market),
+                    UPPER(ticker)
+                )
                 """
             )
 
@@ -37,10 +45,11 @@ class CompanyRepository(BaseRepository):
                 """
                 SELECT id
                 FROM companies
-                WHERE name = ? COLLATE NOCASE
-                  AND COALESCE(country, '') = COALESCE(?, '')
+                WHERE provider_id = ?
+                  AND market = ? COLLATE NOCASE
+                  AND ticker = ? COLLATE NOCASE
                 """,
-                (company.name, company.country),
+                (company.provider_id, company.market, company.ticker),
             ).fetchone()
 
             if existing:
@@ -48,39 +57,64 @@ class CompanyRepository(BaseRepository):
                 connection.execute(
                     """
                     UPDATE companies
-                    SET name = ?,
+                    SET provider_id = ?,
+                        ticker = ?,
+                        market = ?,
+                        name = ?,
                         country = ?,
-                        industry = ?,
                         sector = ?,
+                        active = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
                     (
+                        company.provider_id,
+                        company.ticker,
+                        company.market,
                         company.name,
                         company.country,
-                        company.industry,
                         company.sector,
+                        company.active,
                         company_id,
                     ),
                 )
             else:
                 cursor = connection.execute(
                     """
-                    INSERT INTO companies (name, country, industry, sector)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO companies (
+                        provider_id,
+                        ticker,
+                        market,
+                        name,
+                        country,
+                        sector,
+                        active
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        company.provider_id,
+                        company.ticker,
+                        company.market,
                         company.name,
                         company.country,
-                        company.industry,
                         company.sector,
+                        company.active,
                     ),
                 )
                 company_id = cursor.lastrowid
 
             row = connection.execute(
                 """
-                SELECT id, name, country, industry, sector
+                SELECT
+                    id,
+                    provider_id,
+                    ticker,
+                    market,
+                    name,
+                    country,
+                    sector,
+                    active
                 FROM companies
                 WHERE id = ?
                 """,
@@ -93,7 +127,15 @@ class CompanyRepository(BaseRepository):
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, country, industry, sector
+                SELECT
+                    id,
+                    provider_id,
+                    ticker,
+                    market,
+                    name,
+                    country,
+                    sector,
+                    active
                 FROM companies
                 WHERE id = ?
                 """,
@@ -106,8 +148,11 @@ class CompanyRepository(BaseRepository):
     def _to_model(row: object) -> Company:
         return Company(
             id=row["id"],
+            provider_id=row["provider_id"],
+            ticker=row["ticker"],
+            market=row["market"],
             name=row["name"],
             country=row["country"],
-            industry=row["industry"],
             sector=row["sector"],
+            active=bool(row["active"]),
         )

@@ -2,8 +2,8 @@ from datetime import date
 from pathlib import Path
 
 from config.settings import DATABASE_PATH
-from data_models.financial_item import FinancialItem
 from data_models.financial_statement import FinancialStatement
+from data_models.financial_statement_measure import FinancialStatementMeasure
 from data_models.observation_type import ObservationType
 from data_models.time_series_frequency import TimeSeriesFrequency
 from database.base_repository import BaseRepository
@@ -19,8 +19,11 @@ class FinancialStatementRepository(BaseRepository):
                 """
                 CREATE TABLE IF NOT EXISTS financial_statements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_source_id INTEGER NOT NULL,
-                    item TEXT NOT NULL,
+                    provider_id INTEGER NOT NULL,
+                    company_id INTEGER,
+                    ticker TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    measure TEXT NOT NULL,
                     value REAL NOT NULL,
                     unit TEXT NOT NULL,
                     observation_type TEXT NOT NULL,
@@ -31,7 +34,8 @@ class FinancialStatementRepository(BaseRepository):
                     fiscal_period TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (company_source_id) REFERENCES company_sources(id)
+                    FOREIGN KEY (provider_id) REFERENCES data_providers(id),
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
                 )
                 """
             )
@@ -39,8 +43,10 @@ class FinancialStatementRepository(BaseRepository):
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_financial_statements_identity
                 ON financial_statements (
-                    company_source_id,
-                    item,
+                    provider_id,
+                    UPPER(ticker),
+                    LOWER(market),
+                    measure,
                     frequency,
                     observation_type,
                     COALESCE(start_date, ''),
@@ -59,8 +65,10 @@ class FinancialStatementRepository(BaseRepository):
                 """
                 SELECT id
                 FROM financial_statements
-                WHERE company_source_id = ?
-                  AND item = ?
+                WHERE provider_id = ?
+                  AND ticker = ? COLLATE NOCASE
+                  AND market = ? COLLATE NOCASE
+                  AND measure = ?
                   AND frequency = ?
                   AND observation_type = ?
                   AND COALESCE(start_date, '') = COALESCE(?, '')
@@ -68,8 +76,10 @@ class FinancialStatementRepository(BaseRepository):
                   AND unit = ?
                 """,
                 (
-                    statement.company_source_id,
-                    statement.item.value,
+                    statement.provider_id,
+                    statement.ticker,
+                    statement.market,
+                    statement.measure.value,
                     statement.frequency.value,
                     statement.observation_type.value,
                     start_date,
@@ -79,8 +89,11 @@ class FinancialStatementRepository(BaseRepository):
             ).fetchone()
 
             values = (
-                statement.company_source_id,
-                statement.item.value,
+                statement.provider_id,
+                statement.company_id,
+                statement.ticker,
+                statement.market,
+                statement.measure.value,
                 statement.value,
                 statement.unit,
                 statement.observation_type.value,
@@ -96,8 +109,11 @@ class FinancialStatementRepository(BaseRepository):
                 connection.execute(
                     """
                     UPDATE financial_statements
-                    SET company_source_id = ?,
-                        item = ?,
+                    SET provider_id = ?,
+                        company_id = ?,
+                        ticker = ?,
+                        market = ?,
+                        measure = ?,
                         value = ?,
                         unit = ?,
                         observation_type = ?,
@@ -115,8 +131,11 @@ class FinancialStatementRepository(BaseRepository):
                 cursor = connection.execute(
                     """
                     INSERT INTO financial_statements (
-                        company_source_id,
-                        item,
+                        provider_id,
+                        company_id,
+                        ticker,
+                        market,
+                        measure,
                         value,
                         unit,
                         observation_type,
@@ -126,7 +145,7 @@ class FinancialStatementRepository(BaseRepository):
                         fiscal_year,
                         fiscal_period
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -144,17 +163,39 @@ class FinancialStatementRepository(BaseRepository):
 
     def get_for_period(
         self,
-        company_source_id: int,
+        ticker: str,
+        market: str,
         frequency: TimeSeriesFrequency,
         start_date: date | None = None,
         end_date: date | None = None,
-        items: list[FinancialItem] | None = None,
+        measures: list[FinancialStatementMeasure] | None = None,
     ) -> list[FinancialStatement]:
+        """
+        Retrieve statements for a snapshot or time-series request.
+
+        When only start_date is provided, it represents the exact snapshot
+        date. When both dates are provided, they define an inclusive time-series
+        range. Requests without start_date are invalid.
+        """
+
+        if start_date is None:
+            raise ValueError("start_date is required")
+
+        if (
+            start_date is not None
+            and end_date is not None
+            and start_date > end_date
+        ):
+            raise ValueError("start_date cannot be after end_date")
+
         query = """
             SELECT
                 id,
-                company_source_id,
-                item,
+                provider_id,
+                company_id,
+                ticker,
+                market,
+                measure,
                 value,
                 unit,
                 observation_type,
@@ -164,25 +205,32 @@ class FinancialStatementRepository(BaseRepository):
                 fiscal_year,
                 fiscal_period
             FROM financial_statements
-            WHERE company_source_id = ?
+            WHERE ticker = ? COLLATE NOCASE
+              AND market = ? COLLATE NOCASE
               AND frequency = ?
         """
-        parameters: list[object] = [company_source_id, frequency.value]
+        parameters: list[object] = [
+            ticker,
+            market,
+            frequency.value,
+        ]
 
-        if start_date is not None:
-            query += " AND end_date >= ?"
+        if end_date is None:
+            query += " AND end_date = ?"
             parameters.append(start_date.isoformat())
 
         if end_date is not None:
+            query += " AND end_date >= ?"
+            parameters.append(start_date.isoformat())
             query += " AND end_date <= ?"
             parameters.append(end_date.isoformat())
 
-        if items:
-            placeholders = ", ".join("?" for _ in items)
-            query += f" AND item IN ({placeholders})"
-            parameters.extend(item.value for item in items)
+        if measures:
+            placeholders = ", ".join("?" for _ in measures)
+            query += f" AND measure IN ({placeholders})"
+            parameters.extend(measure.value for measure in measures)
 
-        query += " ORDER BY end_date, item"
+        query += " ORDER BY end_date, measure"
 
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
@@ -195,8 +243,11 @@ class FinancialStatementRepository(BaseRepository):
             """
             SELECT
                 id,
-                company_source_id,
-                item,
+                provider_id,
+                company_id,
+                ticker,
+                market,
+                measure,
                 value,
                 unit,
                 observation_type,
@@ -219,8 +270,11 @@ class FinancialStatementRepository(BaseRepository):
     def _to_model(row: object) -> FinancialStatement:
         return FinancialStatement(
             id=row["id"],
-            company_source_id=row["company_source_id"],
-            item=row["item"],
+            provider_id=row["provider_id"],
+            company_id=row["company_id"],
+            ticker=row["ticker"],
+            market=row["market"],
+            measure=row["measure"],
             value=row["value"],
             unit=row["unit"],
             observation_type=row["observation_type"],

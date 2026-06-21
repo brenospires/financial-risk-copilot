@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class FinancialItem(str, Enum):
+class FinancialStatementMeasure(str, Enum):
     ASSETS = "assets"
     CURRENT_ASSETS = "current_assets"
     CASH = "cash"
@@ -29,4 +29,3 @@ class FinancialItem(str, Enum):
     OPERATING_CASH_FLOW = "operating_cash_flow"
     CAPITAL_EXPENDITURES = "capital_expenditures"
     FREE_CASH_FLOW = "free_cash_flow"
-    SHARES_OUTSTANDING = "shares_outstanding"

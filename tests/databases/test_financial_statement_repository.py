@@ -7,17 +7,14 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from data_models.company import Company
-from data_models.company_source import CompanySource
-from data_models.financial_item import FinancialItem
 from data_models.financial_statement import FinancialStatement
+from data_models.financial_statement_measure import FinancialStatementMeasure
 from data_models.observation_type import ObservationType
-from data_models.provider import DataProvider
 from data_models.time_series_frequency import TimeSeriesFrequency
 from database.company_repository import CompanyRepository
-from database.company_source_repository import CompanySourceRepository
 from database.financial_statement_repository import FinancialStatementRepository
 from database.initialize import initialize_database
-from database.provider_repository import DataProviderRepository
+from database.data_provider_repository import DataProviderRepository
 
 
 class TestFinancialStatementRepository(unittest.TestCase):
@@ -26,19 +23,15 @@ class TestFinancialStatementRepository(unittest.TestCase):
         self.db_path = Path(self.temporary_directory.name) / "test.db"
         initialize_database(self.db_path)
 
-        company = CompanyRepository(self.db_path).upsert(
-            Company(name="Apple Inc.", country="US")
-        )
-        provider = DataProviderRepository(self.db_path).upsert(
-            DataProvider(name="SEC")
-        )
-        self.source = CompanySourceRepository(self.db_path).upsert(
-            CompanySource(
-                company_id=company.id,
-                provider_id=provider.id,
-                provider_company_id="0000320193",
+        self.provider = DataProviderRepository(self.db_path).get_by_id(1)
+        self.assertIsNotNone(self.provider)
+        self.company = CompanyRepository(self.db_path).upsert(
+            Company(
+                provider_id=self.provider.id,
                 ticker="AAPL",
                 market="US",
+                name="Apple Inc.",
+                country="US",
             )
         )
         self.repository = FinancialStatementRepository(self.db_path)
@@ -48,8 +41,11 @@ class TestFinancialStatementRepository(unittest.TestCase):
 
     def statement(self, **changes: object) -> FinancialStatement:
         values: dict[str, object] = {
-            "company_source_id": self.source.id,
-            "item": FinancialItem.REVENUE,
+            "provider_id": self.provider.id,
+            "company_id": self.company.id,
+            "ticker": "AAPL",
+            "market": "US",
+            "measure": FinancialStatementMeasure.REVENUE,
             "value": 100.0,
             "unit": "USD",
             "observation_type": ObservationType.PERIOD,
@@ -61,6 +57,11 @@ class TestFinancialStatementRepository(unittest.TestCase):
         }
         values.update(changes)
         return FinancialStatement.model_validate(values)
+
+    def test_persists_observation_without_company(self) -> None:
+        statement = self.repository.upsert(self.statement(company_id=None))
+
+        self.assertIsNone(statement.company_id)
 
     def test_upsert_updates_same_economic_observation(self) -> None:
         created = self.repository.upsert(self.statement())
@@ -84,11 +85,11 @@ class TestFinancialStatementRepository(unittest.TestCase):
 
         self.assertNotEqual(annual.id, quarterly.id)
 
-    def test_filters_by_frequency_period_and_items(self) -> None:
+    def test_filters_time_series_by_frequency_period_and_measures(self) -> None:
         expected = self.repository.upsert(self.statement())
         self.repository.upsert(
             self.statement(
-                item=FinancialItem.NET_INCOME,
+                measure=FinancialStatementMeasure.NET_INCOME,
                 end_date=date(2023, 12, 31),
                 start_date=date(2023, 1, 1),
                 fiscal_year=2023,
@@ -96,14 +97,61 @@ class TestFinancialStatementRepository(unittest.TestCase):
         )
 
         records = self.repository.get_for_period(
-            company_source_id=self.source.id,
+            ticker="AAPL",
+            market="US",
             frequency=TimeSeriesFrequency.ANNUAL,
             start_date=date(2024, 1, 1),
             end_date=date(2024, 12, 31),
-            items=[FinancialItem.REVENUE],
+            measures=[FinancialStatementMeasure.REVENUE],
         )
 
         self.assertEqual(records, [expected])
+
+    def test_retrieves_snapshot_for_exact_date(self) -> None:
+        expected = self.repository.upsert(self.statement())
+        self.repository.upsert(
+            self.statement(
+                end_date=date(2023, 12, 31),
+                start_date=date(2023, 1, 1),
+                fiscal_year=2023,
+            )
+        )
+
+        records = self.repository.get_for_period(
+            ticker="AAPL",
+            market="US",
+            frequency=TimeSeriesFrequency.ANNUAL,
+            start_date=date(2024, 12, 31),
+        )
+
+        self.assertEqual(records, [expected])
+
+    def test_rejects_end_date_without_start_date(self) -> None:
+        with self.assertRaises(ValueError):
+            self.repository.get_for_period(
+                ticker="AAPL",
+                market="US",
+                frequency=TimeSeriesFrequency.ANNUAL,
+                end_date=date(2024, 12, 31),
+            )
+
+    def test_rejects_request_without_dates(self) -> None:
+        with self.assertRaises(ValueError):
+            self.repository.get_for_period(
+                ticker="AAPL",
+                market="US",
+                frequency=TimeSeriesFrequency.ANNUAL,
+            )
+
+    def test_rejects_start_date_after_end_date(self) -> None:
+        with self.assertRaises(ValueError):
+            self.repository.get_for_period(
+                ticker="AAPL",
+                market="US",
+                frequency=TimeSeriesFrequency.ANNUAL,
+                start_date=date(2025, 1, 1),
+                end_date=date(2024, 12, 31),
+            )
 
 
 if __name__ == "__main__":

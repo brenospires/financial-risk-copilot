@@ -7,8 +7,8 @@ from pydantic import ValidationError
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from data_models.financial_item import FinancialItem
 from data_models.financial_statement import FinancialStatement
+from data_models.financial_statement_measure import FinancialStatementMeasure
 from data_models.observation_type import ObservationType
 from data_models.time_series_frequency import TimeSeriesFrequency
 
@@ -16,8 +16,11 @@ from data_models.time_series_frequency import TimeSeriesFrequency
 class TestFinancialStatement(unittest.TestCase):
     def statement(self, **changes: object) -> FinancialStatement:
         values: dict[str, object] = {
-            "company_source_id": 1,
-            "item": FinancialItem.REVENUE,
+            "provider_id": 1,
+            "company_id": 1,
+            "ticker": "aapl",
+            "market": "US",
+            "measure": FinancialStatementMeasure.REVENUE,
             "value": 100.0,
             "unit": "USD",
             "observation_type": ObservationType.PERIOD,
@@ -33,12 +36,21 @@ class TestFinancialStatement(unittest.TestCase):
     def test_accepts_period_observation(self) -> None:
         statement = self.statement()
 
-        self.assertEqual(statement.item, FinancialItem.REVENUE)
+        self.assertEqual(
+            statement.measure,
+            FinancialStatementMeasure.REVENUE,
+        )
+        self.assertEqual(statement.ticker, "AAPL")
         self.assertEqual(statement.frequency, TimeSeriesFrequency.ANNUAL)
+
+    def test_accepts_observation_without_company(self) -> None:
+        statement = self.statement(company_id=None)
+
+        self.assertIsNone(statement.company_id)
 
     def test_accepts_snapshot_without_start_date(self) -> None:
         statement = self.statement(
-            item=FinancialItem.ASSETS,
+            measure=FinancialStatementMeasure.ASSETS,
             observation_type=ObservationType.SNAPSHOT,
             start_date=None,
         )
@@ -56,7 +68,7 @@ class TestFinancialStatement(unittest.TestCase):
     def test_rejects_start_date_for_snapshot(self) -> None:
         with self.assertRaises(ValidationError):
             self.statement(
-                item=FinancialItem.ASSETS,
+                measure=FinancialStatementMeasure.ASSETS,
                 observation_type=ObservationType.SNAPSHOT,
             )
 
