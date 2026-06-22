@@ -1,18 +1,24 @@
 import sys
+import unittest
 from collections import Counter
 from datetime import date
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from config.settings import SEC_USER_AGENT
 from config.system_defaults import SEC_PROVIDER
 from data_models.financial_statement_measure import FinancialStatementMeasure
 from data_models.time_series_frequency import TimeSeriesFrequency
 from tools.data_providers.sec import SECProvider
 
 
+@unittest.skipUnless(
+    SEC_USER_AGENT,
+    "SEC_USER_AGENT is required for live SEC provider tests",
+)
 def test_sec_provider_pipeline() -> None:
-    """Inspect live SEC normalization manually without persistence."""
+    """Live SEC provider integration test for normalization and canonical selection."""
 
     ticker = "AAPL"
     market = "NASDAQ"

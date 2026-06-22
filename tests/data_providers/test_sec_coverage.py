@@ -1,10 +1,12 @@
 import sys
+import unittest
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from config.settings import SEC_USER_AGENT
 from config.system_defaults import SEC_PROVIDER
 from data_models.financial_statement_measure import FinancialStatementMeasure
 from data_models.time_series_frequency import TimeSeriesFrequency
@@ -26,6 +28,10 @@ COMPANIES = {
 LOW_COVERAGE_THRESHOLD = 0.7
 
 
+@unittest.skipUnless(
+    SEC_USER_AGENT,
+    "SEC_USER_AGENT is required for live SEC coverage tests",
+)
 def test_sec_provider_coverage() -> None:
     """Compare live quarterly SEC measure coverage across companies."""
 
