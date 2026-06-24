@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -112,6 +113,48 @@ class TestCompanyMetricsContract(unittest.TestCase):
             )
         ]
 
+    def trend_snapshots(
+        self,
+        metric_name: str,
+        values: list[float | None],
+        frequency: TimeSeriesFrequency = TimeSeriesFrequency.ANNUAL,
+        **raw_values: float,
+    ) -> pd.DataFrame:
+        pandas_frequency = (
+            "QE"
+            if frequency is TimeSeriesFrequency.QUARTERLY
+            else "YE"
+        )
+        dates = pd.date_range(
+            "2000-12-31",
+            periods=len(values),
+            freq=pandas_frequency,
+        )
+        data = {
+            column: [1.0] * len(values)
+            for column in CompanyMetrics.RAW_MEASURE_COLUMNS
+        }
+        data.update(
+            {
+                column: [pd.NA] * len(values)
+                for column in CompanyMetrics.METRIC_COLUMNS
+            }
+        )
+        data[metric_name] = values
+
+        for column, value in raw_values.items():
+            data[column] = [value] * len(values)
+
+        index = pd.MultiIndex.from_arrays(
+            [
+                [frequency.value] * len(values),
+                dates,
+            ],
+            names=["frequency", "end_date"],
+        )
+
+        return pd.DataFrame(data, index=index)
+
     def test_rejects_empty_statement_list(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -131,6 +174,29 @@ class TestCompanyMetricsContract(unittest.TestCase):
         snapshots = self.metrics.calculate_snapshots(statements)
 
         self.assertEqual(len(snapshots), 2)
+
+    def test_orders_unordered_statements_by_reporting_date(self) -> None:
+        statements = [
+            self.statement(
+                fiscal_year=2024,
+                end_date=date(2024, 12, 31),
+            ),
+            self.statement(
+                fiscal_year=2022,
+                end_date=date(2022, 12, 31),
+            ),
+            self.statement(
+                fiscal_year=2023,
+                end_date=date(2023, 12, 31),
+            ),
+        ]
+
+        snapshots = self.metrics.calculate_snapshots(statements)
+
+        self.assertEqual(
+            list(snapshots.index.get_level_values("end_date")),
+            list(pd.to_datetime(["2022-12-31", "2023-12-31", "2024-12-31"])),
+        )
 
     def test_accepts_statements_without_company_id(self) -> None:
         snapshots = self.metrics.calculate_snapshots(
@@ -212,6 +278,330 @@ class TestCompanyMetricsContract(unittest.TestCase):
                 self.assertTrue(
                     snapshots["net_debt_to_ebitda"].eq(1.0).all()
                 )
+
+    def test_calculate_trend_returns_latest_row_for_short_histories(self) -> None:
+        snapshots = self.metrics.calculate_snapshots(
+            self.complete_history(2)
+        )
+        trend_data = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(
+            set(trend_data),
+            set(CompanyMetrics.METRIC_COLUMNS),
+        )
+
+        latest_row = snapshots.iloc[-1]
+
+        for metric_name, adjusted_value in trend_data.items():
+            with self.subTest(metric=metric_name):
+                if pd.notna(latest_row[metric_name]):
+                    self.assertAlmostEqual(
+                        adjusted_value,
+                        float(latest_row[metric_name]),
+                    )
+                else:
+                    self.assertIsNone(adjusted_value)
+
+    def test_trend_uses_latest_value_after_sorting(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0],
+        ).sort_index(ascending=False)
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(adjusted["current_ratio"], 2.0)
+
+    def test_trend_rejects_duplicate_reporting_timestamps(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0],
+        )
+        snapshots.index = pd.MultiIndex.from_arrays(
+            [
+                [TimeSeriesFrequency.ANNUAL.value] * 2,
+                pd.to_datetime(["2024-12-31", "2024-12-31"]),
+            ],
+            names=["frequency", "end_date"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "timestamps must be unique"):
+            self.metrics.adjust_metrics_for_trend(snapshots)
+
+    def test_trend_preserves_null_from_latest_snapshot(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0, None],
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertIsNone(adjusted["current_ratio"])
+
+    def test_trend_carries_intermediate_values_without_inflating_coverage(
+        self,
+    ) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, None, 2.0, 3.0],
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=0.0,
+        ) as exponential_trend:
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        trend_series = exponential_trend.call_args.args[0]
+        self.assertEqual(list(trend_series), [1.0, 1.0, 2.0, 3.0])
+        self.assertEqual(adjusted["current_ratio"], 3.0)
+
+    def test_trend_inserts_completely_missing_reporting_period(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0, 3.0, 4.0],
+        )
+        missing_date = pd.Timestamp("2002-12-31")
+        snapshots = snapshots.drop(
+            index=(TimeSeriesFrequency.ANNUAL.value, missing_date)
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=0.0,
+        ) as exponential_trend:
+            self.metrics.adjust_metrics_for_trend(snapshots)
+
+        trend_series = exponential_trend.call_args.args[0]
+        self.assertEqual(list(trend_series), [1.0, 2.0, 2.0, 4.0])
+
+    def test_trend_uses_qoq_for_quarterly_snapshots(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 1.5, 2.0],
+            frequency=TimeSeriesFrequency.QUARTERLY,
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=0.0,
+        ) as exponential_trend:
+            self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(exponential_trend.call_args.kwargs["period"], "qoq")
+
+    def test_trend_uses_yoy_for_annual_snapshots(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 1.5, 2.0],
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=0.0,
+        ) as exponential_trend:
+            self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(exponential_trend.call_args.kwargs["period"], "yoy")
+
+    def test_trend_respects_each_profile_adjustment_ceiling(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0, 10.0],
+        )
+        expected_values = {
+            "CONSERVATIVE": 11.0,
+            "MODERATE": 11.5,
+            "AGGRESSIVE": 12.0,
+        }
+
+        for profile, expected_value in expected_values.items():
+            with self.subTest(profile=profile), patch(
+                "tools.company_metrics.INVESTMENT_PROFILE",
+                profile,
+            ), patch(
+                "tools.company_metrics.calculate_exponential_trend",
+                return_value=1.0,
+            ):
+                adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+                self.assertAlmostEqual(adjusted["current_ratio"], expected_value)
+
+    def test_trend_clips_pace_to_configured_range(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0, 10.0],
+        )
+
+        with patch(
+            "tools.company_metrics.INVESTMENT_PROFILE",
+            "CONSERVATIVE",
+        ), patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=5.0,
+        ):
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertAlmostEqual(adjusted["current_ratio"], 11.0)
+
+    def test_trend_uses_configured_pace_clipping_range(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 2.0, 10.0],
+        )
+
+        with patch(
+            "tools.company_metrics.INVESTMENT_PROFILE",
+            "CONSERVATIVE",
+        ), patch(
+            "tools.company_metrics.TREND_CLIPPING_RANGE",
+            (-0.25, 0.25),
+        ), patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=5.0,
+        ):
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertAlmostEqual(adjusted["current_ratio"], 10.25)
+
+    def test_trend_does_not_adjust_zero_final_value(self) -> None:
+        snapshots = self.trend_snapshots(
+            "net_margin",
+            [-0.2, -0.1, 0.0],
+            revenue=100.0,
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=1.0,
+        ):
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(adjusted["net_margin"], 0.0)
+
+    def test_trend_clips_negative_final_value_by_absolute_value(self) -> None:
+        snapshots = self.trend_snapshots(
+            "net_margin",
+            [-0.3, -0.2, -0.1],
+            revenue=100.0,
+        )
+
+        with patch(
+            "tools.company_metrics.INVESTMENT_PROFILE",
+            "CONSERVATIVE",
+        ), patch(
+            "tools.company_metrics.calculate_exponential_trend",
+            return_value=5.0,
+        ):
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertAlmostEqual(adjusted["net_margin"], -0.09)
+
+    def test_trend_does_not_reverse_lower_is_better_metric_values(self) -> None:
+        snapshots = self.trend_snapshots(
+            "debt_to_assets",
+            [0.2, 0.3, 0.4],
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertGreater(adjusted["debt_to_assets"], 0.4)
+
+    def test_trend_increases_improving_interest_coverage(self) -> None:
+        snapshots = self.trend_snapshots(
+            "interest_coverage",
+            [2.0, 3.0, 4.0],
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertGreater(adjusted["interest_coverage"], 4.0)
+
+    def test_trend_adjusts_negative_values_in_the_raw_direction(self) -> None:
+        snapshots = self.trend_snapshots(
+            "net_margin",
+            [-0.3, -0.2, -0.1],
+            revenue=100.0,
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertGreater(adjusted["net_margin"], -0.1)
+
+    def test_faster_improvement_produces_a_larger_adjustment(self) -> None:
+        slower = self.trend_snapshots(
+            "current_ratio",
+            [1.0, 1.5, 2.0],
+        )
+        faster = self.trend_snapshots(
+            "current_ratio",
+            [0.5, 1.0, 2.0],
+        )
+
+        slower_adjusted = self.metrics.adjust_metrics_for_trend(slower)
+        faster_adjusted = self.metrics.adjust_metrics_for_trend(faster)
+
+        self.assertGreater(
+            faster_adjusted["current_ratio"],
+            slower_adjusted["current_ratio"],
+        )
+
+    def test_faster_deterioration_produces_a_larger_adjustment(self) -> None:
+        slower = self.trend_snapshots(
+            "debt_to_assets",
+            [0.3, 0.35, 0.4],
+        )
+        faster = self.trend_snapshots(
+            "debt_to_assets",
+            [0.1, 0.2, 0.4],
+        )
+
+        slower_adjusted = self.metrics.adjust_metrics_for_trend(slower)
+        faster_adjusted = self.metrics.adjust_metrics_for_trend(faster)
+
+        self.assertGreater(
+            faster_adjusted["debt_to_assets"],
+            slower_adjusted["debt_to_assets"],
+        )
+
+    def test_contextual_metric_is_not_adjusted(self) -> None:
+        snapshots = self.trend_snapshots(
+            "operating_cash_flow_to_net_income",
+            [1.0, 2.0, 3.0],
+            net_income=100.0,
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertEqual(
+            adjusted["operating_cash_flow_to_net_income"],
+            3.0,
+        )
+
+    def test_trend_rejects_conditionally_invalid_ratio(self) -> None:
+        snapshots = self.trend_snapshots(
+            "return_on_equity",
+            [0.1, 0.2, 0.3],
+            equity=-10.0,
+        )
+
+        adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        self.assertIsNone(adjusted["return_on_equity"])
+
+    def test_trend_uses_linear_method_above_twenty_observations(self) -> None:
+        snapshots = self.trend_snapshots(
+            "current_ratio",
+            [float(value) for value in range(1, 22)],
+        )
+
+        with patch(
+            "tools.company_metrics.calculate_linear_trend",
+            return_value=0.5,
+        ) as linear_trend:
+            adjusted = self.metrics.adjust_metrics_for_trend(snapshots)
+
+        linear_trend.assert_called_once()
+        self.assertAlmostEqual(adjusted["current_ratio"], 22.05)
 
     def test_one_year_history_is_one_snapshot_row(self) -> None:
         statements = self.complete_history(1)

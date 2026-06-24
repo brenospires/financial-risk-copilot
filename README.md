@@ -40,20 +40,66 @@ These actions are represented by the `Intent` type in `graph/state.py` and docum
 ```text
 User query
     ↓
-Planner selects intent, ticker, market, period, and data requirements
+Planner LLM extracts intent, tickers, market, and requested period
     ↓
-Research layer retrieves cached data and fills missing coverage
+Research layer requests at least five years of data
     ↓
-Provider-specific responses become canonical data models
+SQLite data is loaded first; providers fill temporal gaps and results are upserted
     ↓
-Financial metrics and time-series trends are calculated
+Provider facts become canonical data models
     ↓
-Company and macroeconomic risk signals are combined
+Snapshot metrics and time-series trends are calculated
     ↓
-Writer produces a grounded risk assessment
+Snapshot and trend signals become 0–100 risk scores
+    ↓
+Only compressed evidence is passed to the writer LLM
+    ↓
+Writer LLM produces a grounded risk assessment
 ```
 
 The application keeps retrieval, persistence, calculations, and agent orchestration separate. Provider implementations do not calculate risk metrics, repositories do not call external APIs, and workflow nodes do not contain low-level numerical logic.
+
+The language model is used twice. The planner converts the user query into structured retrieval requirements. After deterministic calculations are complete, the writer summarizes the resulting evidence into a risk assessment. Python code, rather than the language model, remains authoritative for financial metrics, trends, weights, and scores.
+
+## Analysis Period
+
+Company analysis requires at least five years of financial history. If the user does not specify a period, the application uses the most recent five years by default. If the requested period is shorter than five years, the start date is extended backward until the requested window covers five years.
+
+Extending the request does not guarantee five complete observations. Provider and company coverage may be incomplete, so unavailable periods and measures remain explicit rather than being fabricated.
+
+## Risk Scores and Information Compression
+
+All risk scores use a 0–100 scale, where a higher value means greater financial risk. The final company score will combine two views:
+
+- The most recent observation describes the company's current financial position.
+- The historical trend describes whether that position is improving or deteriorating.
+
+Trend risk uses the same scale with three semantic anchors:
+
+- `0`: strongly improving
+- `50`: stable
+- `100`: strongly deteriorating
+
+The initial company-risk categories use the following common weights:
+
+```python
+CATEGORY_WEIGHTS = {
+    "liquidity": 0.20,
+    "leverage": 0.30,
+    "profitability": 0.25,
+    "cash_flow": 0.25,
+}
+```
+
+These weights are an MVP baseline and currently apply to every company. A future sector-relative Bayesian model will support sector-specific priors, weights, and materiality thresholds so that companies can be evaluated against the financial behavior of appropriate peers.
+
+The writer LLM will not receive the complete raw financial statements or the full metric time series. It will receive a compact analytical context containing the final, snapshot, trend, and category scores; the weights used; data coverage and confidence; the strongest risk drivers; material missing data; and a small set of supporting observations. This compression reduces context usage and discourages the model from recalculating deterministic results.
+
+## Local Language Model Strategy
+
+The MVP uses the Qwen model family through Ollama. The current prototype configuration uses `qwen3:8b`, while smaller Qwen variants may be more appropriate for community machines with limited memory or stricter latency requirements.
+
+The planner and writer have different workloads: planning favors low latency and reliable structured output, while risk writing needs enough context and reasoning quality to synthesize compressed evidence without inventing facts. Local context windows and usable context sizes also vary with available RAM or VRAM. For that reason, model choice, context size, and planner/writer assignments will become configuration rather than permanent architectural assumptions. The project is intended to remain model-agnostic even though Qwen is the current family.
 
 ## Provider-Agnostic Financial Statements
 
@@ -100,7 +146,7 @@ The intended cache workflow is:
 5. Re-query the completed dataset.
 6. Apply clearly flagged fallback logic only when gaps remain.
 
-Imputed values must remain distinguishable from provider observations, and analytical output should report the percentage of data affected by fallback handling.
+For as-of analysis, the most recent available value may be carried forward when a requested period has no new observation. Carried values must remain distinguishable from provider observations and retain their original source timestamp. They must not be treated as new observations when calculating CAGR, slope, or volatility. Analytical output should report missing coverage and the percentage of data affected by fallback handling.
 
 ## Data Sources
 
@@ -121,62 +167,36 @@ Implemented:
 - Shared ticker normalization
 - SEC HTTP foundation, ticker-to-CIK resolution, response caching, and company retrieval
 - US GAAP and IFRS candidate mappings for financial-statement measures
-- Unit and repository tests for the new data and persistence layers
+- Database-first financial-statement ingestion with temporal gap detection
+- Generic time-series pivoting and missing-data-safe numerical utilities
+- Vectorized company snapshot metrics
+- Unit, repository, service, metric, and integration tests
 
 In progress:
 
-- SEC fact extraction, period classification, and deduplication
-- Derived financial-statement measures
-- Database-first ingestion coordination
-- Vectorized financial metric and trend calculations
-- Migration of the FRED and risk-scoring layers
+- Time-series trend definitions and calculations
+- Snapshot, trend, category, and final risk scoring
+- Migration of the FRED and macroeconomic risk layers
+- Compressed writer context and grounded risk-assessment generation
 - LangGraph workflow integration
+- Configurable local-model selection
 - Streamlit interface
-
-The `src/` directory contains the previous working implementation and remains a migration reference while the new flat architecture is completed.
 
 ## Project Structure
 
-```text
-financial-risk-copilot/
-├── agents/                         # Future agent implementations
-├── config/
-│   └── settings.py                 # Environment and runtime configuration
-├── data/                           # Local SQLite cache
-├── data_models/
-│   ├── company.py
-│   ├── data_domain.py
-│   ├── data_provider.py
-│   ├── financial_statement.py
-│   ├── financial_statement_measure.py
-│   ├── observation_type.py
-│   └── time_series_frequency.py
-├── database/
-│   ├── base_repository.py
-│   ├── company_repository.py
-│   ├── data_provider_repository.py
-│   ├── financial_statement_repository.py
-│   └── initialize.py
-├── docs/
-│   ├── supported_actions.md
-│   └── TODO.md
-├── graph/
-│   ├── nodes.py
-│   └── state.py
-├── src/                             # Legacy implementation being migrated
-├── tests/
-│   ├── data_models/
-│   └── databases/
-├── tools/
-│   ├── analysis/                    # Financial metrics and risk calculations
-│   ├── data_domains_retrieval/      # Provider interface contracts
-│   └── data_providers/              # SEC and future provider implementations
-├── utils/
-│   └── identifiers.py
-├── .env.example
-├── requirements.txt
-└── README.md
-```
+- `agents/` contains planner, researcher, and writer agent behavior as it is migrated into the current architecture.
+- `config/` contains environment-backed settings and system defaults.
+- `data/` contains the disposable local SQLite cache and other ignored runtime data.
+- `data_models/` defines canonical provider-independent domain models and enumerations.
+- `database/` contains SQLite initialization and repositories focused exclusively on persistence.
+- `docs/` contains the supported-action contract, roadmap, and design notes.
+- `graph/` defines shared workflow state and LangGraph orchestration nodes.
+- `help/` contains background research and implementation references.
+- `llm/` is the home for the model-agnostic local-LLM boundary.
+- `services/` coordinates database-first retrieval, provider fallback, and persistence.
+- `tests/` mirrors the active architecture with deterministic unit, repository, service, metric, and separate integration coverage.
+- `tools/` contains financial calculations, provider contracts, and external data-provider implementations.
+- `utils/` contains small reusable identifier, numeric, and time-series helpers.
 
 ## Technology
 

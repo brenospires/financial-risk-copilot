@@ -17,3 +17,8 @@ SEC_REQUEST_TIMEOUT_SECONDS = int(
 )
 
 FRED_API_KEY = os.getenv("FRED_API_KEY")
+
+INVESTMENT_PROFILE = os.getenv(
+    "INVESTMENT_PROFILE",
+    "CONSERVATIVE",
+).upper()

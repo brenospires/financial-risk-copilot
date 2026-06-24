@@ -4,6 +4,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from config.settings import SEC_USER_AGENT
@@ -29,7 +31,7 @@ class TestMetricsPipelineIntegration(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_downloads_five_years_and_calculates_metrics(self) -> None:
+    def test_downloads_five_years_and_adjusts_quarterly_metrics(self) -> None:
         today = date.today()
         end_year = today.year - 1 if today.month >= 3 else today.year - 2
         start_year = end_year - 4
@@ -45,23 +47,30 @@ class TestMetricsPipelineIntegration(unittest.TestCase):
         statements = service.get_financial_statements(
             ticker="AMZN",
             market="NASDAQ",
-            frequency=TimeSeriesFrequency.ANNUAL,
+            frequency=TimeSeriesFrequency.QUARTERLY,
             start_date=start_date,
             end_date=end_date,
             refresh=True,
         )
-        snapshots = CompanyMetrics().calculate_snapshots(statements)
-        observed_years = {
-            timestamp.year
-            for timestamp in snapshots.index.get_level_values("end_date")
-        }
-        expected_years = set(range(start_year, end_year + 1))
+        metrics = CompanyMetrics()
+        snapshots = metrics.calculate_snapshots(statements)
+        adjusted_metrics = metrics.adjust_metrics_for_trend(snapshots)
+        reporting_dates = list(
+            snapshots.index.get_level_values("end_date")
+        )
+        latest_snapshot = snapshots.iloc[-1]
 
         self.assertTrue(statements)
         self.assertTrue(all(statement.id is not None for statement in statements))
         self.assertTrue(all(statement.company_id is None for statement in statements))
-        self.assertEqual(len(snapshots), 5)
-        self.assertEqual(observed_years, expected_years)
+        self.assertTrue(
+            all(
+                statement.frequency is TimeSeriesFrequency.QUARTERLY
+                for statement in statements
+            )
+        )
+        self.assertEqual(len(snapshots), 20)
+        self.assertEqual(reporting_dates, sorted(reporting_dates))
         self.assertFalse(snapshots.index.has_duplicates)
         self.assertEqual(
             list(snapshots.columns),
@@ -71,10 +80,35 @@ class TestMetricsPipelineIntegration(unittest.TestCase):
             ],
         )
         self.assertTrue(snapshots["assets"].notna().all())
-        self.assertTrue(snapshots["revenue"].notna().all())
         self.assertTrue(snapshots["current_ratio"].notna().all())
         self.assertTrue(snapshots["debt_to_assets"].notna().all())
-        self.assertTrue(snapshots["operating_margin"].notna().all())
+        self.assertGreaterEqual(int(snapshots["revenue"].notna().sum()), 15)
+        self.assertGreaterEqual(
+            int(snapshots["operating_margin"].notna().sum()),
+            15,
+        )
+        self.assertEqual(
+            set(adjusted_metrics),
+            set(CompanyMetrics.METRIC_COLUMNS),
+        )
+        self.assertTrue(
+            any(value is not None for value in adjusted_metrics.values())
+        )
+        self.assertTrue(
+            any(
+                adjusted_value is not None
+                and pd.notna(latest_snapshot[metric_name])
+                and abs(
+                    adjusted_value - float(latest_snapshot[metric_name])
+                ) > 1e-12
+                for metric_name, adjusted_value in adjusted_metrics.items()
+            )
+        )
+
+        for metric_name, adjusted_value in adjusted_metrics.items():
+            with self.subTest(metric=metric_name):
+                if pd.isna(latest_snapshot[metric_name]):
+                    self.assertIsNone(adjusted_value)
 
 
 if __name__ == "__main__":
