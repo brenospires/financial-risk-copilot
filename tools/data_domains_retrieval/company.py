@@ -12,11 +12,6 @@ class CompanyDataProvider(ABC):
         ticker: str,
         market: str,
     ) -> Company:
-        """
-        Retrieve and normalize company data for one ticker and market.
+        """Retrieve and normalize company data without persistence."""
 
-        Implementations must return a Company model and must not perform
-        database reads or writes.
-        """
-
-        raise NotImplementedError
+        ...

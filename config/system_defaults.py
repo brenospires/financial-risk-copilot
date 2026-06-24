@@ -11,7 +11,6 @@ SEC_PROVIDER = DataProvider(
         DataDomain.FINANCIAL_STATEMENT,
     },
     supported_frequencies={
-        TimeSeriesFrequency.QUARTERLY,
         TimeSeriesFrequency.ANNUAL,
     },
 )

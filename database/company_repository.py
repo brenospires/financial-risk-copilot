@@ -1,14 +1,8 @@
-from pathlib import Path
-
-from config.settings import DATABASE_PATH
 from data_models.company import Company
 from database.base_repository import BaseRepository
 
 
 class CompanyRepository(BaseRepository):
-    def __init__(self, db_path: str | Path = DATABASE_PATH) -> None:
-        super().__init__(db_path)
-
     def create_table(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -41,72 +35,28 @@ class CompanyRepository(BaseRepository):
 
     def upsert(self, company: Company) -> Company:
         with self._connect() as connection:
-            existing = connection.execute(
-                """
-                SELECT id
-                FROM companies
-                WHERE provider_id = ?
-                  AND market = ? COLLATE NOCASE
-                  AND ticker = ? COLLATE NOCASE
-                """,
-                (company.provider_id, company.market, company.ticker),
-            ).fetchone()
-
-            if existing:
-                company_id = existing["id"]
-                connection.execute(
-                    """
-                    UPDATE companies
-                    SET provider_id = ?,
-                        ticker = ?,
-                        market = ?,
-                        name = ?,
-                        country = ?,
-                        sector = ?,
-                        active = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (
-                        company.provider_id,
-                        company.ticker,
-                        company.market,
-                        company.name,
-                        company.country,
-                        company.sector,
-                        company.active,
-                        company_id,
-                    ),
-                )
-            else:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO companies (
-                        provider_id,
-                        ticker,
-                        market,
-                        name,
-                        country,
-                        sector,
-                        active
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        company.provider_id,
-                        company.ticker,
-                        company.market,
-                        company.name,
-                        company.country,
-                        company.sector,
-                        company.active,
-                    ),
-                )
-                company_id = cursor.lastrowid
-
             row = connection.execute(
                 """
-                SELECT
+                INSERT INTO companies (
+                    provider_id,
+                    ticker,
+                    market,
+                    name,
+                    country,
+                    sector,
+                    active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO UPDATE SET
+                    provider_id = excluded.provider_id,
+                    ticker = excluded.ticker,
+                    market = excluded.market,
+                    name = excluded.name,
+                    country = excluded.country,
+                    sector = excluded.sector,
+                    active = excluded.active,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING
                     id,
                     provider_id,
                     ticker,
@@ -115,10 +65,16 @@ class CompanyRepository(BaseRepository):
                     country,
                     sector,
                     active
-                FROM companies
-                WHERE id = ?
                 """,
-                (company_id,),
+                (
+                    company.provider_id,
+                    company.ticker,
+                    company.market,
+                    company.name,
+                    company.country,
+                    company.sector,
+                    company.active,
+                ),
             ).fetchone()
 
         return self._to_model(row)

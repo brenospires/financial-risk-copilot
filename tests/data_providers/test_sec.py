@@ -4,13 +4,15 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from config import sec as sec_config
 from config.system_defaults import FRED_PROVIDER, SEC_PROVIDER
 from data_models.data_domain import DataDomain
 from data_models.data_provider import DataProvider
 from data_models.financial_statement_measure import FinancialStatementMeasure
-from data_models.observation_type import ObservationType
 from data_models.time_series_frequency import TimeSeriesFrequency
 from tools.data_providers.sec import SECProvider
 
@@ -18,10 +20,9 @@ from tools.data_providers.sec import SECProvider
 class FakeResponse:
     def __init__(self, payload: Any) -> None:
         self.payload = payload
-        self.raise_for_status_called = False
 
     def raise_for_status(self) -> None:
-        self.raise_for_status_called = True
+        pass
 
     def json(self) -> Any:
         return self.payload
@@ -30,7 +31,7 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[str] = []
 
     def get(
         self,
@@ -38,13 +39,7 @@ class FakeSession:
         headers: dict[str, str],
         timeout: int,
     ) -> FakeResponse:
-        self.calls.append(
-            {
-                "url": url,
-                "headers": headers,
-                "timeout": timeout,
-            }
-        )
+        self.calls.append(url)
 
         if url not in self.responses:
             raise AssertionError(f"Unexpected SEC request: {url}")
@@ -55,22 +50,32 @@ class FakeSession:
 class TestSECProvider(unittest.TestCase):
     TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
     FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
-    SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK0000320193.json"
 
     def setUp(self) -> None:
         self.sec_provider = SEC_PROVIDER.model_copy(deep=True)
+        self.ticker_payload = {
+            "0": {
+                "cik_str": 320193,
+                "ticker": "AAPL",
+                "title": "Apple Inc.",
+            }
+        }
 
     def provider(
         self,
-        responses: dict[str, Any] | None = None,
+        facts: dict[str, Any] | None = None,
         provider: DataProvider | None = None,
     ) -> SECProvider:
+        responses = {self.TICKERS_URL: self.ticker_payload}
+        if facts is not None:
+            responses[self.FACTS_URL] = facts
+
         return SECProvider(
             provider=provider or self.sec_provider,
             user_agent="financial-risk-copilot tests@example.com",
             request_delay=0,
             timeout=10,
-            session=FakeSession(responses or {}),
+            session=FakeSession(responses),
         )
 
     @staticmethod
@@ -82,8 +87,6 @@ class TestSECProvider(unittest.TestCase):
         form: str = "10-K",
         filed_date: str = "2025-02-01",
         fiscal_year: int = 2024,
-        fiscal_period: str = "FY",
-        frame: str | None = None,
     ) -> dict[str, Any]:
         item: dict[str, Any] = {
             "val": value,
@@ -91,14 +94,11 @@ class TestSECProvider(unittest.TestCase):
             "form": form,
             "filed": filed_date,
             "fy": fiscal_year,
-            "fp": fiscal_period,
+            "fp": "FY",
         }
 
         if start_date is not None:
             item["start"] = start_date
-
-        if frame is not None:
-            item["frame"] = frame
 
         return item
 
@@ -113,12 +113,6 @@ class TestSECProvider(unittest.TestCase):
             taxonomy[tag] = {"units": units}
 
         return {"facts": {"us-gaap": taxonomy}}
-
-    @staticmethod
-    def values_by_measure(statements: list[Any]) -> dict[Any, float]:
-        return {
-            statement.measure: statement.value for statement in statements
-        }
 
     def test_rejects_invalid_provider_configuration(self) -> None:
         invalid_providers = (
@@ -145,87 +139,43 @@ class TestSECProvider(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.provider(provider=invalid_provider)
 
-    def test_classifies_and_maps_every_supported_measure(self) -> None:
-        classified_measures = (
-            SECProvider.SNAPSHOT_MEASURES | SECProvider.PERIOD_MEASURES
-        )
+    def test_configuration_classifies_every_measure(self) -> None:
+        classified = sec_config.SNAPSHOT_MEASURES | sec_config.PERIOD_MEASURES
 
-        self.assertEqual(classified_measures, set(FinancialStatementMeasure))
+        self.assertEqual(classified, set(FinancialStatementMeasure))
         self.assertFalse(
-            SECProvider.SNAPSHOT_MEASURES & SECProvider.PERIOD_MEASURES
+            sec_config.SNAPSHOT_MEASURES & sec_config.PERIOD_MEASURES
         )
         self.assertEqual(
-            set(SECProvider.MEASURE_CANDIDATES),
+            set(sec_config.MEASURE_CANDIDATES),
             set(FinancialStatementMeasure),
         )
 
-    def test_fetch_company_normalizes_ticker_and_maps_metadata(self) -> None:
-        session = FakeSession(
-            {
-                self.TICKERS_URL: {
-                    "0": {
-                        "cik_str": 320193,
-                        "ticker": "AAPL",
-                        "title": "Apple Inc.",
-                    }
-                }
-            }
+    def test_fetch_company_normalizes_ticker(self) -> None:
+        company = self.provider().fetch_company(
+            ticker=" $aapl ",
+            market="NASDAQ",
         )
-        provider = SECProvider(
-            provider=self.sec_provider,
-            user_agent="financial-risk-copilot tests@example.com",
-            request_delay=0,
-            timeout=10,
-            session=session,
-        )
-
-        company = provider.fetch_company(ticker=" $aapl ", market="NASDAQ")
 
         self.assertEqual(company.provider_id, 1)
         self.assertEqual(company.ticker, "AAPL")
         self.assertEqual(company.market, "NASDAQ")
         self.assertEqual(company.name, "Apple Inc.")
-        self.assertIsNone(company.country)
-        self.assertIsNone(company.sector)
-        self.assertEqual(len(session.calls), 1)
 
-    def test_fetch_company_uses_submissions_as_name_fallback(self) -> None:
-        provider = self.provider(
-            {
-                self.TICKERS_URL: {
-                    "0": {
-                        "cik_str": 320193,
-                        "ticker": "AAPL",
-                        "title": "",
-                    }
-                },
-                self.SUBMISSIONS_URL: {"name": "Apple Inc."},
-            }
-        )
+    def test_fetch_company_rejects_missing_title(self) -> None:
+        self.ticker_payload["0"]["title"] = ""
 
-        company = provider.fetch_company(ticker="AAPL", market="NASDAQ")
+        with self.assertRaisesRegex(ValueError, "no company name"):
+            self.provider().fetch_company("AAPL", "NASDAQ")
 
-        self.assertEqual(company.name, "Apple Inc.")
-
-    def test_fetch_annual_statements_deduplicates_and_derives_measures(
-        self,
-    ) -> None:
+    def test_returns_annual_dataframe_and_derives_measures(self) -> None:
         annual_start = "2024-01-01"
         annual_end = "2024-12-31"
         facts = self.company_facts(
             {
                 "Assets": [
-                    self.fact(
-                        100,
-                        annual_end,
-                        filed_date="2025-02-01",
-                    ),
-                    self.fact(
-                        110,
-                        annual_end,
-                        form="10-K/A",
-                        filed_date="2025-03-01",
-                    ),
+                    self.fact(100, annual_end),
+                    self.fact(110, annual_end, form="10-K/A"),
                 ],
                 "AssetsCurrent": [self.fact(70, annual_end)],
                 "LiabilitiesCurrent": [self.fact(30, annual_end)],
@@ -257,41 +207,42 @@ class TestSECProvider(unittest.TestCase):
                 ],
             }
         )
-        provider = self.provider({self.FACTS_URL: facts, self.TICKERS_URL: {
-            "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-        }})
 
-        statements = provider.fetch_financial_statements(
+        frame = self.provider(facts).fetch_financial_statements(
             ticker="AAPL",
             market="NASDAQ",
             frequency=TimeSeriesFrequency.ANNUAL,
             start_date=date(2024, 1, 1),
             end_date=date(2024, 12, 31),
         )
-        values = self.values_by_measure(statements)
+        row = frame.iloc[0]
 
-        self.assertEqual(values[FinancialStatementMeasure.ASSETS], 110)
-        self.assertEqual(values[FinancialStatementMeasure.REVENUE], 200)
-        self.assertEqual(values[FinancialStatementMeasure.WORKING_CAPITAL], 40)
-        self.assertEqual(values[FinancialStatementMeasure.DEBT], 50)
-        self.assertEqual(values[FinancialStatementMeasure.FREE_CASH_FLOW], 30)
-        self.assertEqual(values[FinancialStatementMeasure.EBIT], 65)
-        self.assertEqual(values[FinancialStatementMeasure.EBITDA], 85)
-        self.assertTrue(all(statement.provider_id == 1 for statement in statements))
-        self.assertTrue(all(statement.company_id is None for statement in statements))
+        self.assertIsInstance(frame, pd.DataFrame)
+        self.assertEqual(len(frame), 1)
         self.assertEqual(
-            statements,
-            sorted(
-                statements,
-                key=lambda statement: (
-                    statement.end_date,
-                    statement.start_date or date.min,
-                    statement.measure.value,
-                ),
-            ),
+            frame.index.names,
+            [
+                "provider_id",
+                "ticker",
+                "market",
+                "unit",
+                "frequency",
+                "end_date",
+            ],
         )
+        self.assertEqual(
+            list(frame.columns),
+            [measure.value for measure in FinancialStatementMeasure],
+        )
+        self.assertEqual(row["assets"], 100)
+        self.assertEqual(row["revenue"], 200)
+        self.assertEqual(row["working_capital"], 40)
+        self.assertEqual(row["debt"], 50)
+        self.assertEqual(row["free_cash_flow"], 30)
+        self.assertEqual(row["ebit"], 65)
+        self.assertEqual(row["ebitda"], 85)
 
-    def test_exact_date_request_returns_only_matching_period(self) -> None:
+    def test_returns_one_ordered_row_per_reporting_date(self) -> None:
         facts = self.company_facts(
             {
                 "Assets": [
@@ -300,79 +251,79 @@ class TestSECProvider(unittest.TestCase):
                 ]
             }
         )
-        provider = self.provider({self.FACTS_URL: facts, self.TICKERS_URL: {
-            "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-        }})
 
-        statements = provider.fetch_financial_statements(
+        frame = self.provider(facts).fetch_financial_statements(
+            ticker="AAPL",
+            market="NASDAQ",
+            frequency=TimeSeriesFrequency.ANNUAL,
+            start_date=date(2023, 1, 1),
+            end_date=date(2024, 12, 31),
+        )
+
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(
+            list(frame.index.get_level_values("end_date")),
+            list(pd.to_datetime(["2023-12-31", "2024-12-31"])),
+        )
+        self.assertEqual(list(frame["assets"]), [90, 110])
+
+    def test_exact_date_returns_only_matching_row(self) -> None:
+        facts = self.company_facts(
+            {
+                "Assets": [
+                    self.fact(90, "2023-12-31", fiscal_year=2023),
+                    self.fact(110, "2024-12-31"),
+                ]
+            }
+        )
+
+        frame = self.provider(facts).fetch_financial_statements(
             ticker="AAPL",
             market="NASDAQ",
             frequency=TimeSeriesFrequency.ANNUAL,
             start_date=date(2024, 12, 31),
         )
 
-        self.assertEqual(len(statements), 1)
-        self.assertEqual(statements[0].end_date, date(2024, 12, 31))
-        self.assertEqual(statements[0].value, 110)
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["assets"], 110)
 
-    def test_quarterly_request_excludes_cumulative_flow(self) -> None:
+    def test_ignores_unsupported_forms_and_short_periods(self) -> None:
         facts = self.company_facts(
             {
+                "Assets": [
+                    self.fact(10, "2024-12-31", form="10-Q"),
+                    self.fact(20, "2024-12-31", form="20-F"),
+                    self.fact(30, "2024-12-31", form="40-F"),
+                ],
                 "RevenueFromContractWithCustomerExcludingAssessedTax": [
                     self.fact(
-                        25,
-                        "2024-03-31",
-                        start_date="2024-01-01",
-                        form="10-Q",
-                        filed_date="2024-05-01",
-                        fiscal_period="Q1",
-                        frame="CY2024Q1",
-                    ),
-                    self.fact(
-                        70,
-                        "2024-06-30",
-                        start_date="2024-01-01",
-                        form="10-Q",
-                        filed_date="2024-08-01",
-                        fiscal_period="Q2",
-                    ),
-                    self.fact(
-                        45,
-                        "2024-06-30",
-                        start_date="2024-04-01",
-                        form="10-Q",
-                        filed_date="2024-08-01",
-                        fiscal_period="Q2",
-                        frame="CY2024Q2",
-                    ),
-                ]
+                        40,
+                        "2024-12-31",
+                        start_date="2024-10-01",
+                    )
+                ],
             }
         )
-        provider = self.provider({self.FACTS_URL: facts, self.TICKERS_URL: {
-            "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-        }})
 
-        statements = provider.fetch_financial_statements(
+        frame = self.provider(facts).fetch_financial_statements(
             ticker="AAPL",
             market="NASDAQ",
-            frequency=TimeSeriesFrequency.QUARTERLY,
+            frequency=TimeSeriesFrequency.ANNUAL,
             start_date=date(2024, 1, 1),
-            end_date=date(2024, 6, 30),
+            end_date=date(2024, 12, 31),
         )
 
-        self.assertEqual([statement.value for statement in statements], [25, 45])
-        self.assertTrue(
-            all(
-                statement.observation_type is ObservationType.PERIOD
-                for statement in statements
-            )
+        self.assertTrue(frame.empty)
+        self.assertEqual(
+            list(frame.columns),
+            [measure.value for measure in FinancialStatementMeasure],
         )
 
-    def test_selects_one_reporting_unit_for_requested_period(self) -> None:
+    def test_selects_one_reporting_unit(self) -> None:
         facts = self.company_facts(
             {
                 "Assets": {
-                    "EUR": [self.fact(80, "2023-12-31", fiscal_year=2023)],
+                    "EUR": [self.fact(80, "2024-12-31")],
                     "USD": [self.fact(110, "2024-12-31")],
                 },
                 "Liabilities": {
@@ -380,11 +331,8 @@ class TestSECProvider(unittest.TestCase):
                 },
             }
         )
-        provider = self.provider({self.FACTS_URL: facts, self.TICKERS_URL: {
-            "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-        }})
 
-        statements = provider.fetch_financial_statements(
+        frame = self.provider(facts).fetch_financial_statements(
             ticker="AAPL",
             market="NASDAQ",
             frequency=TimeSeriesFrequency.ANNUAL,
@@ -392,88 +340,29 @@ class TestSECProvider(unittest.TestCase):
             end_date=date(2024, 12, 31),
         )
 
-        self.assertEqual({statement.unit for statement in statements}, {"USD"})
-        self.assertEqual(len(statements), 2)
-
-    def test_maps_ifrs_facts_from_foreign_filer(self) -> None:
-        facts = {
-            "facts": {
-                "ifrs-full": {
-                    "Assets": {
-                        "units": {
-                            "EUR": [
-                                self.fact(
-                                    500,
-                                    "2024-12-31",
-                                    form="20-F",
-                                )
-                            ]
-                        }
-                    },
-                    "Revenue": {
-                        "units": {
-                            "EUR": [
-                                self.fact(
-                                    300,
-                                    "2024-12-31",
-                                    start_date="2024-01-01",
-                                    form="20-F",
-                                )
-                            ]
-                        }
-                    },
-                }
-            }
-        }
-        provider = self.provider({self.FACTS_URL: facts, self.TICKERS_URL: {
-            "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-        }})
-
-        statements = provider.fetch_financial_statements(
-            ticker="AAPL",
-            market="NYSE",
-            frequency=TimeSeriesFrequency.ANNUAL,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+        self.assertEqual(
+            set(frame.index.get_level_values("unit")),
+            {"USD"},
         )
-        values = self.values_by_measure(statements)
-
-        self.assertEqual(values[FinancialStatementMeasure.ASSETS], 500)
-        self.assertEqual(values[FinancialStatementMeasure.REVENUE], 300)
-        self.assertEqual({statement.unit for statement in statements}, {"EUR"})
-
-    def test_respects_provider_frequency_configuration(self) -> None:
-        annual_only_provider = DataProvider(
-            id=1,
-            name="SEC",
-            data_domains={
-                DataDomain.COMPANY,
-                DataDomain.FINANCIAL_STATEMENT,
-            },
-            supported_frequencies={TimeSeriesFrequency.ANNUAL},
-        )
-        provider = self.provider(provider=annual_only_provider)
-
-        with self.assertRaises(ValueError):
-            provider.fetch_financial_statements(
-                ticker="AAPL",
-                market="NASDAQ",
-                frequency=TimeSeriesFrequency.QUARTERLY,
-                start_date=date(2024, 1, 1),
-                end_date=date(2024, 3, 31),
-            )
+        self.assertEqual(frame.iloc[0]["assets"], 110)
+        self.assertEqual(frame.iloc[0]["liabilities"], 60)
 
     def test_rejects_unsupported_frequency_and_reversed_dates(self) -> None:
         provider = self.provider()
 
-        with self.assertRaises(ValueError):
-            provider.fetch_financial_statements(
-                ticker="AAPL",
-                market="NASDAQ",
-                frequency=TimeSeriesFrequency.MONTHLY,
-                start_date=date(2024, 1, 1),
-                end_date=date(2024, 12, 31),
-            )
+        for frequency in (
+            TimeSeriesFrequency.MONTHLY,
+            TimeSeriesFrequency.QUARTERLY,
+        ):
+            with self.subTest(frequency=frequency):
+                with self.assertRaises(ValueError):
+                    provider.fetch_financial_statements(
+                        ticker="AAPL",
+                        market="NASDAQ",
+                        frequency=frequency,
+                        start_date=date(2024, 1, 1),
+                        end_date=date(2024, 12, 31),
+                    )
 
         with self.assertRaises(ValueError):
             provider.fetch_financial_statements(
@@ -485,25 +374,7 @@ class TestSECProvider(unittest.TestCase):
             )
 
     def test_caches_ticker_mapping_and_company_facts(self) -> None:
-        session = FakeSession(
-            {
-                self.TICKERS_URL: {
-                    "0": {
-                        "cik_str": 320193,
-                        "ticker": "AAPL",
-                        "title": "Apple Inc.",
-                    }
-                },
-                self.FACTS_URL: self.company_facts({"Assets": []}),
-            }
-        )
-        provider = SECProvider(
-            provider=self.sec_provider,
-            user_agent="financial-risk-copilot tests@example.com",
-            request_delay=0,
-            timeout=10,
-            session=session,
-        )
+        provider = self.provider(self.company_facts({"Assets": []}))
 
         for _ in range(2):
             provider.fetch_financial_statements(
@@ -513,9 +384,9 @@ class TestSECProvider(unittest.TestCase):
                 start_date=date(2024, 12, 31),
             )
 
-        requested_urls = [call["url"] for call in session.calls]
-        self.assertEqual(requested_urls.count(self.TICKERS_URL), 1)
-        self.assertEqual(requested_urls.count(self.FACTS_URL), 1)
+        session = provider.session
+        self.assertEqual(session.calls.count(self.TICKERS_URL), 1)
+        self.assertEqual(session.calls.count(self.FACTS_URL), 1)
 
 
 if __name__ == "__main__":

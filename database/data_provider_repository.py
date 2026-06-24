@@ -1,15 +1,9 @@
-from pathlib import Path
-
-from config.settings import DATABASE_PATH
 from data_models.data_domain import DataDomain
 from data_models.data_provider import DataProvider
 from database.base_repository import BaseRepository
 
 
 class DataProviderRepository(BaseRepository):
-    def __init__(self, db_path: str | Path = DATABASE_PATH) -> None:
-        super().__init__(db_path)
-
     def create_table(self) -> None:
         with self._connect() as connection:
             connection.execute(

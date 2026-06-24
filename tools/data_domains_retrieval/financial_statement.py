@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from datetime import date
 
-from data_models.financial_statement import FinancialStatement
+import pandas as pd
+
 from data_models.time_series_frequency import TimeSeriesFrequency
 
 
@@ -16,13 +17,7 @@ class FinancialStatementDataProvider(ABC):
         frequency: TimeSeriesFrequency,
         start_date: date,
         end_date: date | None = None,
-    ) -> list[FinancialStatement]:
-        """
-        Retrieve and normalize financial statements for one company.
+    ) -> pd.DataFrame:
+        """Retrieve and normalize financial statements without persistence."""
 
-        Providing only start_date requests an exact-date snapshot. Providing
-        both dates requests an inclusive time series. Implementations must
-        reject reversed ranges and must not perform database reads or writes.
-        """
-
-        raise NotImplementedError
+        ...
