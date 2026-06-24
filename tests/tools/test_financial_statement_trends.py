@@ -1,227 +1,149 @@
 import sys
 import unittest
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from data_models.financial_statement import FinancialStatement
-from data_models.financial_statement_measure import (
-    FINANCIAL_STATEMENT_MEASURE_INFO,
-    FinancialStatementMeasure,
-    FinancialStatementMeasureType,
+from config.trend_analysis import (
+    MAX_TREND_ADJUSTMENT,
+    MIN_TREND_ADJUSTMENT,
 )
-from data_models.observation_type import ObservationType
-from data_models.time_series_frequency import TimeSeriesFrequency
 from tools.financial_statement_trends import FinancialStatementTrends
 
 
-class TestFinancialStatementTrendClassifications(unittest.TestCase):
-    def test_metadata_covers_every_measure(self) -> None:
-        self.assertEqual(
-            set(FINANCIAL_STATEMENT_MEASURE_INFO),
-            set(FinancialStatementMeasure),
-        )
-
-    def test_metadata_values_are_valid(self) -> None:
-        valid_directions = {
-            "contextual",
-            "lower_better",
-            "higher_better",
+class TestFinancialStatementTrends(unittest.TestCase):
+    @staticmethod
+    def frame(
+        assets: list[float | None],
+        revenue: list[float | None] | None = None,
+    ) -> pd.DataFrame:
+        data = {
+            "end_date": pd.date_range(
+                "2000-12-31",
+                periods=len(assets),
+                freq="YE",
+            ),
+            "ticker": ["AMZN"] * len(assets),
+            "assets": pd.array(assets, dtype="Float64"),
         }
 
-        for measure, info in FINANCIAL_STATEMENT_MEASURE_INFO.items():
-            with self.subTest(measure=measure):
-                self.assertEqual(
-                    set(info),
-                    {"measure_type", "risk_direction"},
-                )
-                self.assertIn(
-                    info["measure_type"],
-                    set(FinancialStatementMeasureType),
-                )
-                self.assertIn(info["risk_direction"], valid_directions)
+        if revenue is not None:
+            data["revenue"] = pd.array(revenue, dtype="Float64")
 
-    def test_representative_financial_semantics(self) -> None:
-        self.assertEqual(
-            FINANCIAL_STATEMENT_MEASURE_INFO[
-                FinancialStatementMeasure.ASSETS
-            ],
-            {
-                "measure_type": FinancialStatementMeasureType.BALANCE_SHEET,
-                "risk_direction": "contextual",
-            },
-        )
-        self.assertEqual(
-            FINANCIAL_STATEMENT_MEASURE_INFO[
-                FinancialStatementMeasure.DEBT
-            ]["risk_direction"],
-            "lower_better",
-        )
-        self.assertEqual(
-            FINANCIAL_STATEMENT_MEASURE_INFO[
-                FinancialStatementMeasure.REVENUE
-            ],
-            {
-                "measure_type": FinancialStatementMeasureType.FLOW,
-                "risk_direction": "higher_better",
-            },
+        return pd.DataFrame(data)
+
+    def test_returns_unchanged_current_row_with_three_records(self) -> None:
+        statements = self.frame([80.0, 90.0, 100.0])
+
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
         )
 
-
-class TestFinancialStatementTrendMatrix(unittest.TestCase):
-    def setUp(self) -> None:
-        self.trends = FinancialStatementTrends()
-
-    def statement(self, **changes: object) -> FinancialStatement:
-        values: dict[str, object] = {
-            "unit": "USD",
-            "value": 100.0,
-            "market": "NASDAQ",
-            "ticker": "AMZN",
-            "company_id": None,
-            "provider_id": 1,
-            "start_date": None,
-            "fiscal_year": 2024,
-            "fiscal_period": "FY",
-            "end_date": date(2024, 12, 31),
-            "measure": FinancialStatementMeasure.ASSETS,
-            "frequency": TimeSeriesFrequency.ANNUAL,
-            "observation_type": ObservationType.SNAPSHOT,
-        }
-        values.update(changes)
-
-        return FinancialStatement.model_validate(values)
-
-    def test_pivots_only_observed_measures(self) -> None:
-        statements = [
-            self.statement(),
-            self.statement(
-                measure=FinancialStatementMeasure.REVENUE,
-                start_date=date(2024, 1, 1),
-                observation_type=ObservationType.PERIOD,
-            ),
-        ]
-
-        result = self.trends._pivot_financial_statements(statements)
-
+        self.assertEqual(len(adjusted), 1)
+        self.assertEqual(adjusted.iloc[0]["ticker"], "AMZN")
+        self.assertEqual(adjusted.iloc[0]["assets"], 100.0)
         self.assertEqual(
-            set(result.columns),
-            {"assets", "revenue"},
+            adjusted.iloc[0]["end_date"],
+            statements.iloc[-1]["end_date"],
         )
 
-    def test_orders_reporting_dates(self) -> None:
-        statements = [
-            self.statement(),
-            self.statement(
-                fiscal_year=2023,
-                end_date=date(2023, 12, 31),
-            ),
-        ]
+    def test_calculates_score_from_smoothed_historical_changes(self) -> None:
+        values = [100.0, 110.0, 99.0, 118.8, 130.0]
+        statements = self.frame(values, revenue=values)
 
-        result = self.trends._pivot_financial_statements(statements)
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
+        )
+
+        expected_adjustment = MIN_TREND_ADJUSTMENT + (1 / 3) * (
+            MAX_TREND_ADJUSTMENT - MIN_TREND_ADJUSTMENT
+        )
+        self.assertAlmostEqual(
+            adjusted.iloc[0]["assets"],
+            130.0 * (1 + expected_adjustment),
+        )
+        self.assertAlmostEqual(
+            adjusted.iloc[0]["revenue"],
+            130.0 * (1 - expected_adjustment),
+        )
+
+    def test_forward_fills_only_historical_records(self) -> None:
+        statements = self.frame([100.0, None, 110.0, 121.0, 130.0])
+
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
+        )
+
+        expected_adjustment = MIN_TREND_ADJUSTMENT + (1 / 3) * (
+            MAX_TREND_ADJUSTMENT - MIN_TREND_ADJUSTMENT
+        )
+        self.assertAlmostEqual(
+            adjusted.iloc[0]["assets"],
+            130.0 * (1 + expected_adjustment),
+        )
+
+    def test_flow_measure_reverses_balance_sheet_adjustment(self) -> None:
+        values = [100.0, 110.0, 99.0, 118.8, 130.0]
+        statements = self.frame(values, revenue=values)
+
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
+        )
+
+        asset_change = adjusted.iloc[0]["assets"] - 130.0
+        revenue_change = adjusted.iloc[0]["revenue"] - 130.0
+        self.assertAlmostEqual(asset_change, -revenue_change)
+
+    def test_preserves_missing_current_value(self) -> None:
+        statements = self.frame([70.0, 80.0, 90.0, 100.0, None])
+
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
+        )
+
+        self.assertTrue(pd.isna(adjusted.iloc[0]["assets"]))
+
+    def test_orders_records_before_selecting_current_row(self) -> None:
+        statements = self.frame([80.0, 90.0, 100.0])
+        unordered = statements.iloc[[2, 0, 1]]
+
+        adjusted = FinancialStatementTrends().adjust_financial_statements_by_trend(
+            unordered
+        )
 
         self.assertEqual(
-            list(result.index.get_level_values("end_date")),
-            list(pd.to_datetime(["2023-12-31", "2024-12-31"])),
+            adjusted.iloc[0]["end_date"],
+            statements.iloc[-1]["end_date"],
+        )
+        self.assertEqual(adjusted.iloc[0]["assets"], 100.0)
+
+    def test_does_not_mutate_input(self) -> None:
+        statements = self.frame([100.0, 110.0, 99.0, 118.8, 130.0])
+        original = statements.copy()
+
+        FinancialStatementTrends().adjust_financial_statements_by_trend(
+            statements
         )
 
-    def test_rejects_empty_statement_list(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "Financial statements are required",
-        ):
-            self.trends._pivot_financial_statements([])
+        pd.testing.assert_frame_equal(statements, original)
 
-    def test_rejects_mixed_statement_contexts(self) -> None:
-        statements = [
-            self.statement(),
-            self.statement(market="NYSE"),
-        ]
+    def test_rejects_empty_dataframe(self) -> None:
+        with self.assertRaisesRegex(ValueError, "DataFrame is empty"):
+            FinancialStatementTrends().adjust_financial_statements_by_trend(
+                pd.DataFrame()
+            )
 
-        with self.assertRaisesRegex(ValueError, "one market"):
-            self.trends._pivot_financial_statements(statements)
-
-    def test_prepares_current_balance_sheet_measure(self) -> None:
-        statements = [
-            self.statement(
-                value=80.0,
-                fiscal_year=2023,
-                end_date=date(2023, 12, 31),
-            ),
-            self.statement(),
-        ]
-        matrix = self.trends._pivot_financial_statements(statements)
-
-        history, latest = self.trends._prepare_balance_sheet_measure(
-            matrix,
-            FinancialStatementMeasure.ASSETS,
+    def test_rejects_dataframe_without_reporting_date(self) -> None:
+        statements = pd.DataFrame(
+            {"assets": [100.0]},
         )
 
-        self.assertEqual(list(history), [80.0, 100.0])
-        self.assertEqual(latest, 100.0)
-
-    def test_accepts_balance_sheet_measure_one_period_stale(self) -> None:
-        statements = [
-            self.statement(
-                fiscal_period="Q2",
-                end_date=date(2024, 6, 30),
-                frequency=TimeSeriesFrequency.QUARTERLY,
-            ),
-            self.statement(
-                fiscal_period="Q3",
-                end_date=date(2024, 9, 30),
-                measure=FinancialStatementMeasure.CASH,
-                frequency=TimeSeriesFrequency.QUARTERLY,
-            ),
-        ]
-        matrix = self.trends._pivot_financial_statements(statements)
-
-        _, latest = self.trends._prepare_balance_sheet_measure(
-            matrix,
-            FinancialStatementMeasure.ASSETS,
-        )
-
-        self.assertEqual(latest, 100.0)
-
-    def test_rejects_balance_sheet_measure_over_one_period_stale(self) -> None:
-        statements = [
-            self.statement(
-                fiscal_period="Q1",
-                end_date=date(2024, 3, 31),
-                frequency=TimeSeriesFrequency.QUARTERLY,
-            ),
-            self.statement(
-                fiscal_period="Q3",
-                end_date=date(2024, 9, 30),
-                measure=FinancialStatementMeasure.CASH,
-                frequency=TimeSeriesFrequency.QUARTERLY,
-            ),
-        ]
-        matrix = self.trends._pivot_financial_statements(statements)
-
-        history, latest = self.trends._prepare_balance_sheet_measure(
-            matrix,
-            FinancialStatementMeasure.ASSETS,
-        )
-
-        self.assertEqual(list(history), [100.0])
-        self.assertIsNone(latest)
-
-    def test_preserves_absent_balance_sheet_measure_as_null(self) -> None:
-        matrix = self.trends._pivot_financial_statements(
-            [self.statement()]
-        )
-
-        history, latest = self.trends._prepare_balance_sheet_measure(
-            matrix,
-            FinancialStatementMeasure.CASH,
-        )
-
-        self.assertTrue(history.empty)
-        self.assertIsNone(latest)
+        with self.assertRaisesRegex(ValueError, "end_date column"):
+            FinancialStatementTrends().adjust_financial_statements_by_trend(
+                statements
+            )
 
 
 if __name__ == "__main__":
