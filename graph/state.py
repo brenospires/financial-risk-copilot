@@ -2,15 +2,21 @@ from typing import TypedDict, Any, Literal, get_args
 
 Intent = Literal[
     "company_risk_analysis",
-    "macro_conditions_analysis",
     "company_comparison",
-    "company_trend_analysis",
     "company_overview",
-    "full_risk_overview",
     "unsupported",
 ]
 
+PlannerStatus = Literal[
+    "collecting_inputs",
+    "ready_for_pipeline",
+    "unsupported",
+    "planner_error",
+]
+
 SUPPORTED_INTENTS: tuple[str, ...] = get_args(Intent)
+SUPPORTED_PLANNER_STATUSES: tuple[str, ...] = get_args(PlannerStatus)
+
 
 class AgentState(TypedDict, total=False):
     """
@@ -25,16 +31,19 @@ class AgentState(TypedDict, total=False):
     user_query: str
 
     # Planner outputs
+    status: PlannerStatus
     intent: Intent
     tickers: list[str]
     company_names: list[str]
+    start_date: str | None
+    end_date: str | None
     start_year: int | None
     end_year: int | None
     needs_sec_data: bool
-    needs_fred_data: bool
     needs_comparison: bool
-    macro_indicators: list[str]
     plan: list[dict[str, Any]]
+    missing_inputs: list[str]
+    follow_up_questions: list[str]
 
     # Research outputs
     company_data: dict[str, dict[str, Any]]
