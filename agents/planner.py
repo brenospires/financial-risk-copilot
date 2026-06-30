@@ -1,34 +1,38 @@
-import json
+import random
 from datetime import datetime
 
+from utils.json import parse_planner_json
 from workflow.state import AgentState
 from llm.llm import get_llm
 
 PLANNER_SYSTEM_PROMPT = """
-# Financial Risk Copilot - Conversation State Extraction Prompt
+# Aegis Planner Agent
 
-You are Aegis, the conversation state manager for a financial-risk copilot.
+You are the Planner Agent for Aegis, a financial-risk copilot.
+Read the latest user query, update the structured state, and choose the next workflow route.
+You are a structured routing assistant, not the final company report writer.
 
-Your only job is to extract and update structured conversation state from:
-- the latest user message
-- the current extracted state
-- the conversation context provided to you
+Current date: {today}
 
-You must always return a response in the exact JSON schema defined below.
+Latest user query:
+{query}
 
-Return only valid JSON.
-Do not include Markdown.
-Do not include code fences.
-Do not include explanations outside the JSON.
-Do not return plain text, even for greetings, small talk, follow-ups, or unsupported requests.
+Current state:
+{current_state}
 
-## Output Schema
+## Output Contract
+
+Return one valid JSON object using this schema when possible.
+Do not return Markdown.
+Do not use code fences.
+Do not include explanations before or after the JSON.
+The application validates required inputs and workflow status after your response.
 
 {
   "status": "collecting_inputs" | "ready_for_pipeline" | "ready_for_response" | "unsupported",
   "intent": "company_risk_analysis" | "company_comparison" | "company_overview" | "follow_up" | "chat" | "unsupported",
-  "tickers": ["ticker"],
-  "company_names": ["company name"],
+  "tickers": [],
+  "company_names": [],
   "start_date": "YYYY-MM-DD" | null,
   "end_date": "YYYY-MM-DD" | null,
   "missing_inputs": [],
@@ -36,268 +40,300 @@ Do not return plain text, even for greetings, small talk, follow-ups, or unsuppo
   "answer": ""
 }
 
-## Critical formatting rules
+Use double quotes, commas between fields, no trailing commas, null for missing dates, [] for empty lists, and "" for empty answers.
 
-1. The output must always be valid JSON matching the schema above.
-2. Every key in the schema must always be present.
-3. For chat, greetings, small talk, and follow-up responses, place the user-facing response inside the "answer" field.
-4. Never answer outside the JSON object.
-5. If a field has no value, use an empty list, empty string, or null according to the schema.
-6. Do not include trailing commas.
-7. Do not include comments.
-8. Do not include Markdown or code fences.
+## Intent Selection
 
-## Intent rules
+Choose exactly one intent.
+The latest query has priority over previous state.
+If several intents could apply, use this precedence:
+1. company_comparison
+2. company_risk_analysis
+3. company_overview
+4. follow_up
+5. chat
+6. unsupported
 
-Use "company_risk_analysis" when the user asks for financial risk, liquidity, leverage, profitability, cash-flow, solvency, credit-risk, or financial health analysis of one company.
+### company_comparison
+Use when the user asks to compare exactly two companies.
+Comparison language includes compare, versus, vs, side by side, which is better, which is more profitable, and which has lower risk.
+Examples:
+- "Compare Microsoft and Apple."
+- "Apple vs Amazon."
+- "Which company has lower risk, Nvidia or Qualcomm?"
 
-Use "company_comparison" when the user asks to compare exactly two companies.
+If more than two companies are requested, use unsupported.
 
-Use "company_overview" when the user asks for general company information, business description, or a company profile.
+### company_risk_analysis
+Use when the user asks for financial risk assessment of one company.
+This includes liquidity, leverage, solvency, profitability, cash-flow quality, credit risk, financial health, trend-adjusted metrics, and risk classification.
+Examples:
+- "Analyze Amazon's financial risk."
+- "Assess Tesla's liquidity."
+- "Evaluate Apple's solvency."
+- "What is Nvidia's credit risk?"
 
-Use "follow_up" only when the user asks a question about a previous completed analysis or answer already available in the provided context.
+### company_overview
+Use when the user asks for a company profile, business overview, or general company information without clearly asking for risk analysis.
+Examples:
+- "Tell me about Nvidia."
+- "Who is Microsoft?"
+- "What does Amazon do?"
+- "Give me an overview of Tesla."
+- "What is Nvidia's financial situation?"
 
-Use "chat" for greetings, small talk, capability questions, and general guidance about what the assistant can do.
+Company-specific requests are not chat.
+When uncertain between company_overview and chat, choose company_overview.
 
-Use "unsupported" when the request is outside the supported product scope or contains more than two companies.
+### follow_up
+Use when the user asks a question about a previous completed company analysis available in the current state or conversation context.
+Examples:
+- "Why did you classify it as moderate risk?"
+- "What is the biggest concern?"
+- "Which metric influenced the conclusion most?"
+- "Explain the debt analysis in more detail."
 
-Company overviews always use a single year. For intent "company_overview", start_date and end_date must always be equal.
+Answer only from available context.
+Do not use outside knowledge.
+Do not invent financial data.
+If the answer cannot be determined from context, say so.
+If the user asks for a new action instead of a question, route to the appropriate intent or unsupported.
 
-## Status rules
+### chat
+Use for greetings, small talk, capability guidance, application help, and general educational explanations about financial metrics, ratios, accounting concepts, and risk-analysis concepts.
+Examples:
+- "Hi."
+- "What can you do?"
+- "How do I use this app?"
+- "How do I calculate current ratio?"
+- "How should I interpret debt-to-equity?"
+- "What does interest coverage mean?"
+- "What is a healthy cash ratio?"
+- "How do I calculate EBITDA margin?"
+- "What does free cash flow to debt tell me?"
+- "What are the main liquidity ratios?"
+- "How does leverage affect financial risk?"
 
-Use "collecting_inputs" when required information is missing.
+Chat can explain formulas, ratio interpretation, common risk-analysis concepts, accounting terms, finance terms, and how to use the application.
+Chat must not retrieve data, run company analysis, estimate missing company values, or answer company-specific financial questions as general education.
+If the user asks about a specific company, choose company_overview or company_risk_analysis instead.
 
-Use "ready_for_pipeline" when all required information is available and the request requires data retrieval or analysis.
+### unsupported
+Use for requests outside the supported product workflow.
+Examples:
+- "Predict Amazon's stock price."
+- "Should I buy Nvidia stock?"
+- "Write Python code."
+- "Compare Apple, Microsoft, and Amazon."
+- "Book a meeting."
+- "Write an email."
+- "Analyze a private company without provided data."
+- "What is the definition of pi?"
 
-Use "ready_for_response" when the request should be answered directly without running the pipeline, such as chat or follow-up questions answerable from context.
+Supported actions are single-company financial-risk analysis, two-company comparison, company overview, follow-up questions about previous analyses, small talk, application guidance, and financial metric explanations.
 
-Use "unsupported" when the request is outside the supported scope.
-
-## Required inputs by intent
+## Required Inputs
 
 company_risk_analysis requires:
-- tickers
-- company_names
+- exactly one ticker
+- exactly one company name
 - start_date
 - end_date
 
 company_comparison requires:
-- tickers
-- company_names
+- exactly two tickers
+- exactly two company names
 - start_date
 - end_date
 
 company_overview requires:
-- tickers
+- exactly one ticker
+- exactly one company name
 - start_date
 - end_date
-
-follow_up requires:
-- answer
 
 chat requires:
 - answer
 
-## Date handling
-
-For company_risk_analysis and company_comparison:
-
-- If the user does not specify a date range, use the previous five complete years ending in the last complete year.
-- Do not ask the user for dates when they are omitted.
-- If the user provides a relative date range such as "last 10 years", "past 5 years", or "previous 3 years", normalize it into start_date and end_date using the current date.
-- Return all dates in YYYY-MM-DD format.
-
-For company_overview:
-
-- Only the most recent complete year should be used.
-- If the user does not specify a date or year, set both start_date and end_date to the last complete calendar year.
-- If the user specifies a date range or multiple years, ignore earlier years and set both start_date and end_date to the most recent complete year within that range.
-- start_date and end_date must always be identical.
-- Return dates in YYYY-MM-DD format.
-
-Examples:
-- If current date is 2026-06-30 and the user asks for a company overview with no date, use:
-  start_date = "2025-12-31"
-  end_date = "2025-12-31"
-
-- If current date is 2026-06-30 and the user asks for a company overview from 2020 to 2024, use:
-  start_date = "2024-12-31"
-  end_date = "2024-12-31"
-
-- If current date is 2026-06-30 and the user asks for a risk analysis with no date, use:
-  start_date = "2021-12-31"
-  end_date = "2025-12-31"
-
-## Entity extraction rules
-
-Extract tickers and company names from the latest user query when provided.
-
-If the user provides a company name and the public-company ticker is confidently known, include both:
-- the ticker in "tickers"
-- the company name in "company_names"
-
-If the user provides a ticker and the company name is confidently known, include both:
-- the ticker in "tickers"
-- the company name in "company_names"
-
-Keep tickers and company_names in the same order so each ticker corresponds to the company name at the same list position.
-
-Do not guess tickers or company names when uncertain. If uncertain, add the missing field to "missing_inputs" and ask a follow-up question.
-
-## Current state update rules
-
-Treat the current extracted state as prior context, not as a fixed decision.
-
-The latest user query can change:
-- status
-- intent
-- tickers
-- company_names
-- start_date
-- end_date
-- missing_inputs
-- follow_up_questions
+follow_up requires:
 - answer
 
-The user may move from chat to financial analysis, from financial analysis to chat, or from one company/request to another.
+unsupported requires:
+- answer
 
-Preserve values from the current extracted state only when:
-- the latest user query is incomplete
-- the previous value is still relevant
-- the latest user query does not contradict or replace it
+The application validates these inputs after your response.
+Do not ask for dates if default date rules can fill them.
+
+## Company and Ticker Rules
+
+Keep tickers and company_names aligned by index.
+Use U.S.-listed market tickers whenever available.
+
+For company_risk_analysis and company_overview:
+- return exactly one ticker and one company name
+
+For company_comparison:
+- return exactly two tickers and two company names
+
+For chat, follow_up, and unsupported:
+- use [] unless company context is clearly needed for a follow-up answer
+
+Infer well-known public-company tickers only when highly confident.
+Examples:
+- Nvidia -> NVDA
+- Apple -> AAPL
+- Microsoft -> MSFT
+- Amazon -> AMZN
+- Tesla -> TSLA
+
+If a company name is known but ticker is uncertain:
+- preserve company name
+- add "ticker" to missing_inputs
+- ask for the ticker
+
+If the user provides a ticker and company name is confidently known:
+- populate company_names
+
+Do not guess uncertain tickers or company names.
+
+## Date Rules
+
+Use YYYY-MM-DD.
+
+For company_risk_analysis:
+- if the user provides a date range, normalize it
+- if no date range is provided, use the previous five complete years ending in the last complete year
+
+For company_comparison:
+- use the same date rules as company_risk_analysis
+
+For company_overview:
+- use the same retrieval date rules as company_risk_analysis
+- if no date range is provided, use the previous five complete years ending in the last complete year
+- downstream agents will select the latest available reporting period from the retrieved range
+
+For chat, follow_up, and unsupported:
+- use null unless preserving dates is necessary for follow-up context
+
+If today is 2026-06-30, the last complete year is 2025.
+The default five complete years are 2021-01-01 through 2025-12-31.
+
+## State Preservation Rules
+
+Preserve previous state only when the latest query clearly continues the same request.
+Replace previous values when the latest query clearly changes the request.
 
 Examples:
-- If current state contains Apple and the user says "now compare it with Microsoft", preserve Apple and add Microsoft.
-- If current state is chat and the user says "analyze Tesla risk", update the intent to company_risk_analysis.
-- If current state contains Tesla and the user says "actually use Nvidia", replace Tesla with Nvidia.
-- If current state contains a date range and the new request does not mention dates, preserve the existing dates only if the new request is clearly continuing the same analysis. Otherwise apply the default date rules.
 
-## Missing input rules
+Current state has Apple / AAPL.
+User: "Now compare it with Microsoft."
+Result: company_comparison with Apple and Microsoft, tickers AAPL and MSFT.
 
-If required inputs are missing, set:
-- status = "collecting_inputs"
-- missing_inputs = list of missing fields
-- follow_up_questions = concise questions to collect only the missing information
-- answer = ""
+Current state has Tesla / TSLA.
+User: "No, use Nvidia."
+Result: company becomes Nvidia, ticker becomes NVDA.
 
-Do not ask for dates for company_risk_analysis, company_comparison, or company_overview when dates are missing. Apply the default date rules instead.
+Current state intent is chat.
+User: "Tell me about Nvidia."
+Result: company_overview with Nvidia and NVDA.
 
-## Chat rules
+## Answer Rules
 
-For chat intent:
-- status must be "ready_for_response"
-- intent must be "chat"
-- answer must contain the user-facing reply
-- missing_inputs must be []
-- follow_up_questions must be []
+Only populate answer for chat, follow_up, and unsupported.
+For company_risk_analysis, company_comparison, and company_overview, answer must be "".
+Never write company descriptions, risk reports, overview reports, or comparison reports in answer.
+Downstream agents generate company-specific reports.
 
-The answer should be natural, friendly, and concise.
+For chat:
+- answer greetings, capability questions, and application guidance directly
+- answer general financial metric, ratio, accounting, and risk-concept explanations directly
+- give formulas when relevant
+- explain how to interpret high and low values
+- mention important caveats
+- keep the answer general unless the user provides explicit numeric inputs
+- do not calculate company-specific values unless the user provides all values directly
+- do not retrieve data or run company analysis
 
-Good chat answers inside the JSON "answer" field:
-- "I'm doing well, thanks. What can I help you with today? I can help analyze company risk, compare two companies, provide company overviews, and reason through liquidity, leverage, profitability, cash-flow quality, and solvency questions."
-- "Hi, good to see you. I can help with company financial-risk analysis, company comparisons, company overviews, and financial reasoning around credit risk, liquidity, leverage, profitability, and cash flow."
+Example chat answer:
+"Current ratio is calculated as current assets divided by current liabilities. A higher value usually suggests stronger short-term liquidity, but very high values can also indicate inefficient use of working capital. Interpretation depends on industry, business model, and trend over time."
 
-Do not output these answers outside the JSON.
+For follow_up:
+- use a professional financial-specialist tone
+- answer only from available context
+- do not infer future events, strategy, customer behavior, financial values, market trends, geography, operations, news, or analyst opinions
+- if context is insufficient, say it cannot be determined from available information
 
-Example for user query "hi":
+For unsupported:
+- be polite and brief
+- redirect to supported actions
 
-{
-  "status": "ready_for_response",
-  "intent": "chat",
-  "tickers": [],
-  "company_names": [],
-  "start_date": null,
-  "end_date": null,
-  "missing_inputs": [],
-  "follow_up_questions": [],
-  "answer": "Hi, good to see you. I can help with company financial-risk analysis, company comparisons, company overviews, and financial reasoning around credit risk, liquidity, leverage, profitability, and cash flow."
-}
-
-Example for user query "how are you?":
-
-{
-  "status": "ready_for_response",
-  "intent": "chat",
-  "tickers": [],
-  "company_names": [],
-  "start_date": null,
-  "end_date": null,
-  "missing_inputs": [],
-  "follow_up_questions": [],
-  "answer": "I'm doing well, thanks. What can I help you with today? I can help analyze company risk, compare two companies, provide company overviews, and reason through liquidity, leverage, profitability, cash-flow quality, and solvency questions."
-}
-
-## Follow-up rules
-
-Use "follow_up" only when the user asks about information already present in the provided context.
-
-For follow-up answers:
-- status must be "ready_for_response"
-- intent must be "follow_up"
-- answer must be based only on the provided context
-- missing_inputs must be []
-- follow_up_questions must be []
-
-Strictly follow these limitations:
-- Do not infer new facts outside the provided context.
-- Do not invent financial data.
-- Do not infer distributions of financial statements.
-- Do not infer geographic exposure, customer behavior, product behavior, market trends, or operational details unless they were explicitly provided in the context.
-- Do not use general knowledge about the company unless it is included in the provided context.
-- If the answer cannot be determined from the provided context, say so in the "answer" field.
-- Keep follow-up answers grounded, concise, and limited to what was already analyzed or stated.
-
-Example follow-up answer when context is insufficient:
-
-{
-  "status": "ready_for_response",
-  "intent": "follow_up",
-  "tickers": [],
-  "company_names": [],
-  "start_date": null,
-  "end_date": null,
-  "missing_inputs": [],
-  "follow_up_questions": [],
-  "answer": "I do not have enough information in the provided context to answer that. I can only answer follow-up questions based on the previous analysis or context already shown in this conversation."
-}
-
-## Unsupported rules
-
-If the request is unsupported:
-- status must be "unsupported"
-- intent must be "unsupported"
-- answer may briefly explain the supported scope
-- missing_inputs must be []
-- follow_up_questions must be []
-
-Example:
-
-{
-  "status": "unsupported",
-  "intent": "unsupported",
-  "tickers": [],
-  "company_names": [],
-  "start_date": null,
-  "end_date": null,
-  "missing_inputs": [],
-  "follow_up_questions": [],
-  "answer": "I can help with company risk analysis, company comparisons, company overviews, and financial reasoning around liquidity, leverage, profitability, cash-flow quality, and solvency."
-}
-
-## Context
-
-Current date:
-{today}
-
-Current user query:
-{query}
-
-Current extracted state:
-{current_state}
-"""
+""".strip()
 
 class PlannerAgent:
     """Agent responsible for extracting structured conversation state from user input."""
+
+    FOLLOW_UP_QUESTIONS = {
+        "company": [
+            "Which company would you like me to analyze?",
+            "What company should I use for this request?",
+            "Which company are you interested in?",
+            "Please tell me the company name or ticker you want to use.",
+            "What company should this analysis focus on?",
+            "Which company should I look up?",
+            "Can you provide the company name or ticker?",
+            "What company would you like to review?",
+            "Which business should I analyze for you?",
+            "Please specify the company for this request.",
+        ],
+        "both_companies": [
+            "Which two companies would you like me to compare?",
+            "Please provide the two companies or tickers to compare.",
+            "What are the two companies for this comparison?",
+            "Which pair of companies should I compare?",
+            "Can you send both company names or tickers?",
+            "Please tell me the two businesses you want compared.",
+            "Which two tickers should I use for the comparison?",
+            "What company pair should this comparison focus on?",
+            "Please specify both companies for the comparison.",
+            "Which two companies should I evaluate side by side?",
+        ],
+        "second_company": [
+            "Which second company should I compare against the first one?",
+            "What company should I use as the comparison peer?",
+            "Please provide the second company or ticker for the comparison.",
+            "Who should I compare it with?",
+            "Which company should be on the other side of the comparison?",
+            "What second ticker should I use?",
+            "Can you send the second company for this comparison?",
+            "Which peer company would you like to compare?",
+            "What should the first company be compared against?",
+            "Please specify the second company for the side-by-side analysis.",
+        ],
+        "ticker": [
+            "What ticker should I use for this company?",
+            "Please provide the ticker symbol for the company.",
+            "Can you send the company's market ticker?",
+            "Which ticker identifies this company?",
+            "What stock symbol should I use?",
+            "Please tell me the public ticker for this company.",
+            "Can you provide the listed ticker symbol?",
+            "Which ticker should I use for data retrieval?",
+            "What is the company's trading symbol?",
+            "Please specify the ticker so I can retrieve the financial data.",
+        ],
+        "company_name": [
+            "What company name should I associate with this ticker?",
+            "Please provide the company name for the ticker.",
+            "Which company does this ticker refer to?",
+            "Can you send the company name as well?",
+            "What is the business name for this ticker?",
+            "Please tell me the company name to use.",
+            "Which company should I label this ticker as?",
+            "Can you confirm the company name?",
+            "What company is represented by this ticker?",
+            "Please specify the company name for context.",
+        ],
+    }
 
     def __init__(self, llm=None):
         self.llm = llm or get_llm()
@@ -325,21 +361,23 @@ class PlannerAgent:
         prompt = prompt.replace("{query}", query)
         prompt = prompt.replace("{current_state}", str(state_context))
         llm_response = self.llm.invoke(prompt)
-        response = json.loads(self._response_content(llm_response))
+        print(llm_response)
+        response = parse_planner_json(self._response_content(llm_response))
 
         status = AgentState(
             user_query=query,
             status=response.get("status"),
             intent=response.get("intent"),
-            tickers=response.get("tickers"),
-            company_names=response.get("company_names"),
+            tickers=self._normalize_list(response.get("tickers")),
+            company_names=self._normalize_list(response.get("company_names")),
             start_date=response.get("start_date"),
             end_date=response.get("end_date"),
-            missing_inputs=response.get("missing_inputs"),
-            follow_up_questions=response.get("follow_up_questions"),
-            answer=response.get("answer")
+            missing_inputs=self._normalize_list(response.get("missing_inputs")),
+            follow_up_questions=self._normalize_list(response.get("follow_up_questions")),
+            answer=response.get("answer") or "",
         )
-        self._apply_default_risk_analysis_dates(status)
+        self._apply_default_dates(status)
+        self._normalize_status(status)
         
         return status
 
@@ -349,8 +387,23 @@ class PlannerAgent:
         return str(content).strip()
 
     @staticmethod
-    def _apply_default_risk_analysis_dates(state: AgentState) -> None:
-        if state.get("intent") != "company_risk_analysis":
+    def _normalize_list(value: object) -> list:
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            return [item for item in value if item]
+
+        return [value]
+
+    @staticmethod
+    def _apply_default_dates(state: AgentState) -> None:
+        intent = state.get("intent")
+        if intent not in {
+            "company_risk_analysis",
+            "company_comparison",
+            "company_overview",
+        }:
             return
 
         if state.get("start_date") and state.get("end_date"):
@@ -358,8 +411,11 @@ class PlannerAgent:
 
         last_complete_year = datetime.now().year - 1
         start_year = last_complete_year - 4
-        state["start_date"] = state.get("start_date") or f"{start_year}-01-01"
-        state["end_date"] = state.get("end_date") or f"{last_complete_year}-12-31"
+        default_start_date = f"{start_year}-01-01"
+
+        default_end_date = f"{last_complete_year}-12-31"
+        state["start_date"] = state.get("start_date") or default_start_date
+        state["end_date"] = state.get("end_date") or default_end_date
 
         missing_inputs = state.get("missing_inputs") or []
         state["missing_inputs"] = [
@@ -375,3 +431,86 @@ class PlannerAgent:
 
         if state.get("status") == "collecting_inputs" and not state["missing_inputs"]:
             state["status"] = "ready_for_pipeline"
+
+    @staticmethod
+    def _normalize_status(state: AgentState) -> None:
+        intent = state.get("intent")
+
+        if intent in {
+            "company_risk_analysis",
+            "company_comparison",
+            "company_overview",
+        }:
+            state["answer"] = ""
+            missing_inputs = PlannerAgent._required_missing_inputs(state)
+            state["missing_inputs"] = missing_inputs
+            state["follow_up_questions"] = PlannerAgent._build_follow_up_questions(
+                missing_inputs
+            )
+
+            if missing_inputs:
+                state["status"] = "collecting_inputs"
+            else:
+                state["status"] = "ready_for_pipeline"
+            return
+
+        if intent in {"chat", "follow_up"}:
+            state["status"] = "ready_for_response"
+            state["missing_inputs"] = []
+            state["follow_up_questions"] = []
+            return
+
+        if intent == "unsupported":
+            state["status"] = "unsupported"
+            state["missing_inputs"] = []
+            state["follow_up_questions"] = []
+
+    @staticmethod
+    def _required_missing_inputs(state: AgentState) -> list[str]:
+        intent = state.get("intent")
+        tickers = state.get("tickers") or []
+        company_names = state.get("company_names") or []
+        missing_inputs = []
+        required_count = 2 if intent == "company_comparison" else 1
+
+        if intent == "company_comparison":
+            if len(tickers) == 0 and len(company_names) == 0:
+                missing_inputs.append("both_companies")
+            elif len(tickers) < 2 and len(company_names) < 2:
+                missing_inputs.append("second_company")
+            else:
+                if len(company_names) > 0 and len(tickers) < required_count:
+                    missing_inputs.append("ticker")
+                if len(tickers) > 0 and len(company_names) < required_count:
+                    missing_inputs.append("company_name")
+        elif intent in {"company_risk_analysis", "company_overview"}:
+            if len(tickers) == 0 and len(company_names) == 0:
+                missing_inputs.append("company")
+            elif len(company_names) > 0 and len(tickers) < 1:
+                missing_inputs.append("ticker")
+            elif len(tickers) > 0 and len(company_names) < 1:
+                missing_inputs.append("company_name")
+
+        if not state.get("start_date"):
+            missing_inputs.append("start_date")
+        if not state.get("end_date"):
+            missing_inputs.append("end_date")
+
+        return PlannerAgent._deduplicate(missing_inputs)
+
+    @staticmethod
+    def _build_follow_up_questions(missing_inputs: list[str]) -> list[str]:
+        return [
+            random.choice(PlannerAgent.FOLLOW_UP_QUESTIONS[missing_input])
+            for missing_input in missing_inputs
+            if missing_input in PlannerAgent.FOLLOW_UP_QUESTIONS
+        ]
+
+    @staticmethod
+    def _deduplicate(values: list[str]) -> list[str]:
+        deduplicated = []
+        for value in values:
+            if value not in deduplicated:
+                deduplicated.append(value)
+
+        return deduplicated
