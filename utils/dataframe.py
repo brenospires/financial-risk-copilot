@@ -13,3 +13,15 @@ def get_single_row_value(
         return None
 
     return data[column_name].iloc[0]
+
+
+def with_end_date_column(data: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with end_date available as a column."""
+
+    if "end_date" in data.columns:
+        return data.copy()
+
+    if "end_date" not in data.index.names:
+        raise ValueError("Financial statements require an end_date column")
+
+    return data.reset_index()

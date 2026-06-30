@@ -24,6 +24,10 @@ class FakeLLM:
         return FakeResponse(self.content)
 
 
+def planner_with_noop_researcher(llm: FakeLLM) -> Planner:
+    return Planner(llm=llm, researcher=lambda state: state)
+
+
 class TestPlanner(unittest.TestCase):
     def test_builds_ready_state_from_llm_response(self) -> None:
         llm = FakeLLM(
@@ -41,7 +45,9 @@ class TestPlanner(unittest.TestCase):
             """
         )
 
-        state = Planner(llm=llm).update_state("Analyze the financial risk of AAPL.")
+        state = planner_with_noop_researcher(llm).update_state(
+            "Analyze the financial risk of AAPL."
+        )
 
         self.assertEqual(state["status"], "ready_for_pipeline")
         self.assertEqual(state["intent"], "company_risk_analysis")
@@ -52,7 +58,9 @@ class TestPlanner(unittest.TestCase):
         self.assertTrue(state["needs_sec_data"])
         self.assertFalse(state["needs_comparison"])
         self.assertEqual(len(state["plan"]), 1)
-        self.assertEqual(state["plan"][0]["ticker"], "AAPL")
+        self.assertEqual(state["plan"][0]["agent"], "researcher")
+        self.assertEqual(state["plan"][0]["action"], "research_company_risk")
+        self.assertEqual(state["plan"][0]["tickers"], ["AAPL"])
 
     def test_defaults_to_past_five_years_when_dates_are_missing(self) -> None:
         llm = FakeLLM(
@@ -70,7 +78,7 @@ class TestPlanner(unittest.TestCase):
             """
         )
 
-        state = Planner(llm=llm).update_state("Analyze MSFT risk.")
+        state = planner_with_noop_researcher(llm).update_state("Analyze MSFT risk.")
 
         self.assertEqual(state["status"], "ready_for_pipeline")
         self.assertEqual(state["tickers"], ["MSFT"])
@@ -94,7 +102,7 @@ class TestPlanner(unittest.TestCase):
             """
         )
 
-        state = Planner(llm=llm).update_state("Analyze Apple risk.")
+        state = planner_with_noop_researcher(llm).update_state("Analyze Apple risk.")
 
         self.assertEqual(state["status"], "ready_for_pipeline")
         self.assertEqual(state["tickers"], ["AAPL"])
@@ -103,6 +111,7 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(state["follow_up_questions"], [])
         self.assertTrue(state["needs_sec_data"])
         self.assertEqual(len(state["plan"]), 1)
+        self.assertEqual(state["plan"][0]["action"], "research_company_risk")
 
     def test_comparison_requires_second_ticker_even_if_llm_omits_missing_input(self) -> None:
         llm = FakeLLM(
@@ -120,7 +129,7 @@ class TestPlanner(unittest.TestCase):
             """
         )
 
-        state = Planner(llm=llm).update_state("Compare MSFT.")
+        state = planner_with_noop_researcher(llm).update_state("Compare MSFT.")
 
         self.assertEqual(state["status"], "collecting_inputs")
         self.assertIn("comparison_ticker", state["missing_inputs"])
@@ -154,14 +163,155 @@ class TestPlanner(unittest.TestCase):
             """
         )
 
-        state = Planner(llm=llm).update_state("Use GOOGL.", current_state=current_state)
+        state = planner_with_noop_researcher(llm).update_state(
+            "Use GOOGL.",
+            current_state=current_state,
+        )
 
         self.assertEqual(state["status"], "ready_for_pipeline")
         self.assertEqual(state["tickers"], ["MSFT", "GOOGL"])
         self.assertEqual(state["start_date"], "2020-01-01")
         self.assertEqual(state["end_date"], "2024-12-31")
         self.assertTrue(state["needs_comparison"])
-        self.assertEqual(len(state["plan"]), 2)
+        self.assertEqual(len(state["plan"]), 1)
+        self.assertEqual(state["plan"][0]["agent"], "researcher")
+        self.assertEqual(state["plan"][0]["action"], "research_company_comparison")
+        self.assertEqual(state["plan"][0]["tickers"], ["MSFT", "GOOGL"])
+
+    def test_builds_overview_research_plan_for_company_overview(self) -> None:
+        llm = FakeLLM(
+            """
+            {
+              "status": "ready_for_pipeline",
+              "intent": "company_overview",
+              "tickers": ["TSLA"],
+              "company_names": ["Tesla, Inc."],
+              "start_date": null,
+              "end_date": null,
+              "missing_inputs": [],
+              "follow_up_questions": []
+            }
+            """
+        )
+
+        state = planner_with_noop_researcher(llm).update_state(
+            "Give me a Tesla overview."
+        )
+
+        self.assertEqual(state["status"], "ready_for_pipeline")
+        self.assertEqual(state["intent"], "company_overview")
+        self.assertEqual(state["tickers"], ["TSLA"])
+        self.assertEqual(len(state["plan"]), 1)
+        self.assertEqual(state["plan"][0]["agent"], "researcher")
+        self.assertEqual(state["plan"][0]["action"], "research_company_overview")
+        self.assertEqual(state["plan"][0]["tickers"], ["TSLA"])
+
+    def test_builds_direct_response_state_for_chat(self) -> None:
+        llm = FakeLLM(
+            """
+            {
+              "status": "ready_for_response",
+              "intent": "chat",
+              "tickers": [],
+              "company_names": [],
+              "start_date": null,
+              "end_date": null,
+              "missing_inputs": [],
+              "follow_up_questions": []
+            }
+            """
+        )
+
+        state = planner_with_noop_researcher(llm).update_state("Hi there.")
+
+        self.assertEqual(state["user_query"], "Hi there.")
+        self.assertEqual(state["status"], "ready_for_response")
+        self.assertEqual(state["intent"], "chat")
+        self.assertFalse(state["needs_sec_data"])
+        self.assertFalse(state["needs_comparison"])
+        self.assertEqual(state["plan"], [])
+
+    def test_direct_response_intents_clear_missing_inputs(self) -> None:
+        llm = FakeLLM(
+            """
+            {
+              "status": "collecting_inputs",
+              "intent": "chat",
+              "tickers": [],
+              "company_names": [],
+              "start_date": null,
+              "end_date": null,
+              "missing_inputs": ["tickers"],
+              "follow_up_questions": ["Which ticker should I use?"]
+            }
+            """
+        )
+
+        state = planner_with_noop_researcher(llm).update_state("What can you do?")
+
+        self.assertEqual(state["status"], "ready_for_response")
+        self.assertEqual(state["intent"], "chat")
+        self.assertEqual(state["missing_inputs"], [])
+        self.assertEqual(state["follow_up_questions"], [])
+        self.assertFalse(state["needs_sec_data"])
+        self.assertEqual(state["plan"], [])
+
+    def test_builds_direct_response_state_for_follow_up(self) -> None:
+        llm = FakeLLM(
+            """
+            {
+              "status": "ready_for_response",
+              "intent": "follow_up",
+              "tickers": ["AAPL"],
+              "company_names": ["Apple Inc."],
+              "start_date": null,
+              "end_date": null,
+              "missing_inputs": [],
+              "follow_up_questions": []
+            }
+            """
+        )
+
+        state = planner_with_noop_researcher(llm).update_state(
+            "What drove the risk rating?"
+        )
+
+        self.assertEqual(state["user_query"], "What drove the risk rating?")
+        self.assertEqual(state["status"], "ready_for_response")
+        self.assertEqual(state["intent"], "follow_up")
+        self.assertEqual(state["tickers"], ["AAPL"])
+        self.assertFalse(state["needs_sec_data"])
+        self.assertEqual(state["plan"], [])
+
+    def test_calls_researcher_after_completed_extraction(self) -> None:
+        llm = FakeLLM(
+            """
+            {
+              "status": "ready_for_pipeline",
+              "intent": "company_risk_analysis",
+              "tickers": ["AAPL"],
+              "company_names": ["Apple Inc."],
+              "start_date": "2023-01-01",
+              "end_date": "2024-12-31",
+              "missing_inputs": [],
+              "follow_up_questions": []
+            }
+            """
+        )
+
+        def researcher(state):
+            state["company_metrics"] = {"AAPL": {"current_ratio": 1.5}}
+
+            return state
+
+        state = Planner(llm=llm, researcher=researcher).update_state(
+            "Analyze Apple risk."
+        )
+
+        self.assertEqual(
+            state["company_metrics"],
+            {"AAPL": {"current_ratio": 1.5}},
+        )
 
     def test_invalid_planner_response_becomes_error_state_without_regex_fallback(self) -> None:
         original_builder = planner.build_state_from_llm
@@ -177,6 +327,7 @@ class TestPlanner(unittest.TestCase):
             planner.build_state_from_llm = original_builder
 
         self.assertEqual(state["status"], "planner_error")
+        self.assertEqual(state["user_query"], "Analyze AAPL risk.")
         self.assertEqual(state["tickers"], [])
         self.assertEqual(state["plan"], [])
         self.assertFalse(state["needs_sec_data"])
@@ -188,6 +339,10 @@ class TestPlanner(unittest.TestCase):
         self.assertIn("status", PLANNER_SYSTEM_PROMPT)
         self.assertIn("follow_up_questions", PLANNER_SYSTEM_PROMPT)
         self.assertIn("Collect company identity in one planner call", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("past 10 years", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("ready_for_response", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("follow_up", PLANNER_SYSTEM_PROMPT)
+        self.assertIn("chat", PLANNER_SYSTEM_PROMPT)
         self.assertIn("If status is collecting_inputs", PLANNER_SYSTEM_PROMPT)
 
 

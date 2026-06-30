@@ -33,7 +33,7 @@ The copilot is being built to support:
 - Macroeconomic conditions analysis
 - Full risk overview
 
-These actions are represented by the `Intent` type in `graph/state.py` and documented in `docs/supported_actions.md`.
+These actions are represented by the `Intent` type in `workflow/state.py` and documented in `docs/supported_actions.md`.
 
 ## Core Design
 
@@ -190,7 +190,7 @@ In progress:
 - `data_models/` defines canonical provider-independent domain models and enumerations.
 - `database/` contains SQLite initialization and repositories focused exclusively on persistence.
 - `docs/` contains the supported-action contract, roadmap, and design notes.
-- `graph/` defines shared workflow state and LangGraph orchestration nodes.
+- `workflow/` defines shared workflow state and orchestration routes.
 - `help/` contains background research and implementation references.
 - `llm/` is the home for the model-agnostic local-LLM boundary.
 - `services/` coordinates database-first retrieval, provider fallback, and persistence.

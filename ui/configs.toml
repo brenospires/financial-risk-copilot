@@ -1,0 +1,11 @@
+[app]
+name = "Financial Risk Copilot"
+assistant_name = "Aegis"
+default_page = "Chat with AI"
+
+[model]
+provider = "ollama"
+name = "qwen2.5-coder:7b"
+
+[router]
+direct_response_intents = ["chat", "follow_up"]

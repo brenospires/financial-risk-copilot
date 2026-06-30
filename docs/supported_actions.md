@@ -110,7 +110,7 @@ Realized volatility is not implemented.
 
 ## Not currently supported
 
-The following `Intent` values exist in `graph/state.py`, but none is currently
+The following `Intent` values exist in `workflow/state.py`, but none is currently
 executable through the active agent workflow:
 
 - Company overview

@@ -22,7 +22,7 @@ this phase.
 ## 1. Confirm the workflow contracts
 
 - [ ] Keep the planner output aligned with the supported intents in
-  `graph/state.py` and the actions in `docs/supported_actions.md`.
+  `workflow/state.py` and the actions in `docs/supported_actions.md`.
 - [ ] Define the planner date contract with `date` values and an explicit
   `TimeSeriesFrequency`; do not infer monthly financial statements because the
   SEC provider currently supports quarterly and annual observations.
@@ -125,7 +125,7 @@ scoring phase and require separately approved definitions.
 - [ ] Keep generic time-series helpers separate from the private methods that
   expose each named trend metric.
 
-## 5. Integrate calculated metrics into graph state
+## 5. Integrate calculated metrics into workflow state
 
 - [ ] Replace the current broad `company_metrics` payload with an agreed shape
   that stores, per ticker, the statement list or most recent statement data,
@@ -136,7 +136,7 @@ scoring phase and require separately approved definitions.
   newer incomplete periods; pass both the selected result and its missing-data
   diagnostics to downstream stages.
 - [ ] Stop this implementation phase after company financial metrics and trends
-  are available in graph state.
+  are available in workflow state.
 
 ## 6. Add targeted tests
 

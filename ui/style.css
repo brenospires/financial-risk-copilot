@@ -1,0 +1,7 @@
+[data-testid="stChatMessageAvatarUser"] {
+    background-color: #18C6A5;
+}
+
+[data-testid="stChatMessageAvatarAssistant"] {
+    background-color: #071D49;
+}

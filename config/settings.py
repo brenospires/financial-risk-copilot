@@ -18,6 +18,8 @@ SEC_REQUEST_TIMEOUT_SECONDS = int(
 
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-coder:7b")
+
 INVESTMENT_PROFILE = os.getenv(
     "INVESTMENT_PROFILE",
     "CONSERVATIVE",
