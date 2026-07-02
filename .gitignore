@@ -222,6 +222,5 @@ __marimo__/
 *.csv
 
 .env
-AGENTS.md
 .agents
 .codex

@@ -1,7 +1,6 @@
 import json
 import re
 
-
 def parse_planner_json(content: str) -> dict:
     content = content.strip()
 
@@ -12,7 +11,15 @@ def parse_planner_json(content: str) -> dict:
     start = content.find("{")
     end = content.rfind("}")
 
-    if start == -1 or end == -1:
-        raise ValueError(f"No JSON object found in model response: {content}")
+    if start != -1 and end != -1 and end > start:
+        return json.loads(content[start:end + 1])
 
-    return json.loads(content[start:end + 1])
+    return {
+        "status": "done",
+        "intent": "chat",
+        "tickers": [],
+        "company_names": [],
+        "start_date": None,
+        "end_date": None,
+        "answer": content,
+    }
